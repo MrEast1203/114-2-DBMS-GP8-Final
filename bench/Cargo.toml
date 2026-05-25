@@ -1,0 +1,28 @@
+[package]
+name = "researchdb-bench"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "ResearchDB Phase 1 benchmark harness — AGE smoke test, hybrid orchestrator (later), regression cells."
+
+[[bin]]
+name = "researchdb-bench"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rand.workspace = true
+hdrhistogram.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

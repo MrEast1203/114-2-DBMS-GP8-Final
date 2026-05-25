@@ -1,0 +1,20 @@
+{"qid":"Q4-1","type":"Q4","desc":"與 ResNet 相關 且 cites ResNet","seed_chunk":1,"bm25_text":null,"anchor_paper":1,"depth":2}
+{"qid":"Q4-2","type":"Q4","desc":"與 HOG 視覺特徵相關 且 cites HOG","seed_chunk":276,"bm25_text":null,"anchor_paper":309,"depth":2}
+{"qid":"Q4-3","type":"Q4","desc":"與 MapReduce 相關 且 cites MapReduce","seed_chunk":4,"bm25_text":null,"anchor_paper":4,"depth":2}
+{"qid":"Q4-4","type":"Q4","desc":"與 Spanner 相關 且 cites Spanner","seed_chunk":5,"bm25_text":null,"anchor_paper":5,"depth":2}
+{"qid":"Q4-5","type":"Q4","desc":"與 LSTM 序列建模相關 且 cites LSTM","seed_chunk":8,"bm25_text":null,"anchor_paper":8,"depth":2}
+{"qid":"Q5-1","type":"Q5","desc":"提到 'transformer self attention' 且 cites Attention","seed_chunk":null,"bm25_text":"transformer self attention","anchor_paper":2,"depth":2}
+{"qid":"Q5-2","type":"Q5","desc":"提到 'distributed transaction' 且 cites Spanner","seed_chunk":null,"bm25_text":"distributed transaction consistency","anchor_paper":5,"depth":2}
+{"qid":"Q5-3","type":"Q5","desc":"提到 'logical clock event ordering' 且 cites Lamport 1978","seed_chunk":null,"bm25_text":"logical clock event ordering","anchor_paper":1928,"depth":2}
+{"qid":"Q5-4","type":"Q5","desc":"提到 'residual deep learning' 且 cites ResNet","seed_chunk":null,"bm25_text":"residual deep learning","anchor_paper":1,"depth":2}
+{"qid":"Q5-5","type":"Q5","desc":"提到 'distributed computing parallel' 且 cites MapReduce","seed_chunk":null,"bm25_text":"distributed computing parallel","anchor_paper":4,"depth":2}
+{"qid":"Q6-1","type":"Q6","desc":"與 Attention 相關 且 提到 'machine translation'","seed_chunk":2,"bm25_text":"machine translation","anchor_paper":null,"depth":null}
+{"qid":"Q6-2","type":"Q6","desc":"與 ResNet 相關 且 提到 'batch normalization'","seed_chunk":1,"bm25_text":"batch normalization","anchor_paper":null,"depth":null}
+{"qid":"Q6-3","type":"Q6","desc":"與 Spanner 相關 且 提到 'consensus paxos raft'","seed_chunk":5,"bm25_text":"consensus paxos raft","anchor_paper":null,"depth":null}
+{"qid":"Q6-4","type":"Q6","desc":"與 Meltdown 相關 且 提到 'cache timing attack'","seed_chunk":6,"bm25_text":"cache timing attack","anchor_paper":null,"depth":null}
+{"qid":"Q6-5","type":"Q6","desc":"與 MapReduce 相關 且 提到 'fault tolerance replication'","seed_chunk":4,"bm25_text":"fault tolerance replication","anchor_paper":null,"depth":null}
+{"qid":"Q7-1","type":"Q7","desc":"與 ResNet 相關 + 提到 'convolutional neural network' + cites ResNet","seed_chunk":1,"bm25_text":"convolutional neural network","anchor_paper":1,"depth":2}
+{"qid":"Q7-2","type":"Q7","desc":"與 HOG 相關 + 提到 'object detection feature' + cites HOG","seed_chunk":276,"bm25_text":"object detection feature","anchor_paper":309,"depth":2}
+{"qid":"Q7-3","type":"Q7","desc":"與 MapReduce 相關 + 提到 'cluster scheduling' + cites MapReduce","seed_chunk":4,"bm25_text":"cluster scheduling","anchor_paper":4,"depth":2}
+{"qid":"Q7-4","type":"Q7","desc":"與 Spanner 相關 + 提到 'transaction snapshot isolation' + cites Spanner","seed_chunk":5,"bm25_text":"transaction snapshot isolation","anchor_paper":5,"depth":2}
+{"qid":"Q7-5","type":"Q7","desc":"與 LSTM 相關 + 提到 'recurrent sequence' + cites LSTM","seed_chunk":8,"bm25_text":"recurrent sequence","anchor_paper":8,"depth":2}

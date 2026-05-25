@@ -1,0 +1,145 @@
+{
+  "schema": "researchdb.phase1.storage.v1",
+  "items": [
+    {
+      "name": "ag_catalog.papers",
+      "kind": "table",
+      "bytes": 29925376
+    },
+    {
+      "name": "ag_catalog.authors",
+      "kind": "table",
+      "bytes": 3072000
+    },
+    {
+      "name": "ag_catalog.paper_authors",
+      "kind": "table",
+      "bytes": 4956160
+    },
+    {
+      "name": "ag_catalog.chunks",
+      "kind": "table",
+      "bytes": 26042368
+    },
+    {
+      "name": "ag_catalog.chunk_embeddings",
+      "kind": "table",
+      "bytes": 43622400
+    },
+    {
+      "name": "ag_catalog.citations",
+      "kind": "table",
+      "bytes": 16482304
+    },
+    {
+      "name": "ag_catalog.authors_pkey",
+      "kind": "index",
+      "bytes": 942080
+    },
+    {
+      "name": "ag_catalog.paper_authors_pkey",
+      "kind": "index",
+      "bytes": 2998272
+    },
+    {
+      "name": "ag_catalog.chunks_pkey",
+      "kind": "index",
+      "bytes": 614400
+    },
+    {
+      "name": "ag_catalog._sqlx_migrations_pkey",
+      "kind": "index",
+      "bytes": 16384
+    },
+    {
+      "name": "ag_catalog.papers_pkey",
+      "kind": "index",
+      "bytes": 843776
+    },
+    {
+      "name": "ag_catalog.citations_pkey",
+      "kind": "index",
+      "bytes": 11837440
+    },
+    {
+      "name": "ag_catalog.chunk_embeddings_pkey",
+      "kind": "index",
+      "bytes": 942080
+    },
+    {
+      "name": "ag_catalog.papers_bm25_idx",
+      "kind": "index",
+      "bytes": 30187520
+    },
+    {
+      "name": "ag_catalog.chunk_embeddings_hnsw_cos",
+      "kind": "index",
+      "bytes": 52862976
+    },
+    {
+      "name": "paradedb._typmod_cache_pkey",
+      "kind": "index",
+      "bytes": 8192
+    },
+    {
+      "name": "citations_g.Paper",
+      "kind": "table",
+      "bytes": 2514944
+    },
+    {
+      "name": "citations_g.CITES",
+      "kind": "table",
+      "bytes": 22421504
+    },
+    {
+      "name": "citations_g.paper_props_gin",
+      "kind": "index",
+      "bytes": 3588096
+    },
+    {
+      "name": "citations_g.cites_start_idx",
+      "kind": "index",
+      "bytes": 8437760
+    },
+    {
+      "name": "citations_g.cites_end_idx",
+      "kind": "index",
+      "bytes": 11190272
+    },
+    {
+      "name": "citations_g._ag_label_vertex_pkey",
+      "kind": "index",
+      "bytes": 8192
+    },
+    {
+      "name": "citations_g._ag_label_edge_pkey",
+      "kind": "index",
+      "bytes": 8192
+    },
+    {
+      "name": "citations_g._ag_label_vertex",
+      "kind": "table",
+      "bytes": 0
+    },
+    {
+      "name": "citations_g._ag_label_edge",
+      "kind": "table",
+      "bytes": 0
+    }
+  ],
+  "totals": {
+    "age_index_bytes": 23232512,
+    "age_index_mb": 22.15625,
+    "age_table_bytes": 24936448,
+    "age_table_mb": 23.78125,
+    "bm25_index_bytes": 30187520,
+    "bm25_index_mb": 28.7890625,
+    "hnsw_index_bytes": 52862976,
+    "hnsw_index_mb": 50.4140625,
+    "overhead_ratio": 1.0573635223447093,
+    "primary_keys_bytes": 18202624,
+    "relational_tables_bytes": 124100608,
+    "relational_tables_mb": 118.3515625,
+    "total_index_bytes": 149422080
+  }
+}

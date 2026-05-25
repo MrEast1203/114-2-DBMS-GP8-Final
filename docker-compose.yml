@@ -1,0 +1,97 @@
+# ResearchDB · Phase 1 dev stack
+#
+# Phase 1 Week 1 (current): postgres + Apache AGE only — sufficient for AGE
+# smoke test (the gate). Full stack with pgvector + pg_search will land in
+# task B1 (researchdb-plan.html §Phase 1 deliverables) via the custom
+# docker/Dockerfile.postgres-age that combines all three extensions.
+#
+# Usage:
+#   docker compose up -d db          # start postgres + AGE
+#   docker compose --profile bench up bench   # run smoke test (once bench built)
+#   docker compose --profile test up test     # run unit tests
+
+services:
+  db:
+    # Custom image: PG16 + pgvector + pg_search (ParadeDB BM25) + Apache AGE.
+    # Built from docker/Dockerfile.postgres-age. The Week-1 smoke gate could
+    # run on the AGE-only base, but Phase 1 main body (orchestrator, BM25
+    # cells, vector cells) requires all three extensions together.
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.postgres-age
+    image: researchdb/postgres-age:dev
+    container_name: researchdb-db
+    environment:
+      POSTGRES_USER: researchdb
+      POSTGRES_PASSWORD: researchdb
+      POSTGRES_DB: researchdb
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    # Preload all three extensions. AGE wants `age` first because its
+    # catalog setup must run before any session that uses ag_catalog.
+    # pg_search and pgvector are loaded too; pg_search registers its
+    # background worker on load.
+    command: >
+      postgres
+      -c shared_preload_libraries=age,pg_search
+      -c session_preload_libraries=age
+      -c search_path=ag_catalog,"$$user",public
+      -c log_statement=none
+      -c log_min_duration_statement=200
+      -c max_connections=50
+      -c shared_buffers=512MB
+      -c work_mem=64MB
+      -c maintenance_work_mem=256MB
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./migrations:/migrations:ro
+    healthcheck:
+      # All three extensions must report present.
+      test:
+        - CMD-SHELL
+        - >
+          pg_isready -U researchdb &&
+          psql -U researchdb -d researchdb -tAc
+          "SELECT count(*) FROM pg_extension WHERE extname IN ('age','vector','pg_search')"
+          | grep -q '^3$$'
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  # Benchmark harness — built from local Rust workspace.
+  # Profile-gated so `docker compose up` doesn't rebuild this on every db start.
+  bench:
+    profiles: ["bench"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bench
+    container_name: researchdb-bench
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://researchdb:researchdb@db:5432/researchdb
+      RUST_LOG: info
+    volumes:
+      - ./reports:/reports
+      - ./eval:/eval:ro
+
+  # Test runner — same image, runs `cargo test`.
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bench
+    container_name: researchdb-test
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://researchdb:researchdb@db:5432/researchdb
+      RUST_LOG: info
+    command: ["cargo", "test", "--workspace", "--", "--nocapture"]
+
+volumes:
+  postgres-data:

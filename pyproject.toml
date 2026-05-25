@@ -1,0 +1,29 @@
+[project]
+name = "researchdb-ingest"
+version = "0.1.0"
+description = "ResearchDB Phase 1 data ingestion + smoke-test helpers (Python side)"
+requires-python = ">=3.11"
+dependencies = [
+    "psycopg[binary]>=3.2",
+]
+
+# Real embedding models (PyTorch + sentence-transformers) — heavy install,
+# only needed when --strategy minilm is used. CI and lightweight setups
+# skip this group.
+[project.optional-dependencies]
+embed = [
+    "sentence-transformers>=5.5.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

@@ -1,0 +1,37 @@
+# Rust workspace builder for ResearchDB benchmark harness.
+# Two stages: dep cache + final build, keeps rebuilds fast when only sources change.
+
+FROM rust:1.86-bookworm AS builder
+
+WORKDIR /app
+
+# Cache deps: copy only manifests first.
+COPY Cargo.toml Cargo.lock* ./
+COPY bench/Cargo.toml bench/
+
+# Dummy main so cargo can resolve and build deps once. We delete it after.
+RUN mkdir -p bench/src && \
+    echo "fn main() {}" > bench/src/main.rs && \
+    cargo build --release --workspace || true
+
+# Now copy real sources and rebuild.
+COPY bench/src bench/src
+COPY migrations migrations
+COPY scripts scripts
+
+RUN touch bench/src/main.rs && cargo build --release --workspace
+
+# Runtime stage — slim Debian with just libpq (sqlx native-tls + postgres).
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libpq5 libssl3 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /app/target/release/researchdb-bench /usr/local/bin/researchdb-bench
+COPY --from=builder /app/migrations /app/migrations
+
+ENTRYPOINT ["researchdb-bench"]
+CMD ["--help"]

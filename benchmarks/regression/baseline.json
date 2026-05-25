@@ -1,0 +1,201 @@
+{
+  "samples": 20,
+  "cells": [
+    {
+      "key": "Q1_naive",
+      "p50_us": 16063,
+      "p95_us": 29263,
+      "p99_us": 36447,
+      "result_count": 10
+    },
+    {
+      "key": "Q1_v0",
+      "p50_us": 16111,
+      "p95_us": 19087,
+      "p99_us": 26175,
+      "result_count": 10
+    },
+    {
+      "key": "Q1_v1",
+      "p50_us": 16231,
+      "p95_us": 19823,
+      "p99_us": 23743,
+      "result_count": 10
+    },
+    {
+      "key": "Q1_v2",
+      "p50_us": 16031,
+      "p95_us": 20319,
+      "p99_us": 23775,
+      "result_count": 10
+    },
+    {
+      "key": "Q2_naive",
+      "p50_us": 30335,
+      "p95_us": 30863,
+      "p99_us": 38175,
+      "result_count": 10
+    },
+    {
+      "key": "Q2_v0",
+      "p50_us": 30415,
+      "p95_us": 37855,
+      "p99_us": 40447,
+      "result_count": 10
+    },
+    {
+      "key": "Q2_v1",
+      "p50_us": 30527,
+      "p95_us": 31375,
+      "p99_us": 38079,
+      "result_count": 10
+    },
+    {
+      "key": "Q2_v2",
+      "p50_us": 30431,
+      "p95_us": 31167,
+      "p99_us": 39903,
+      "result_count": 10
+    },
+    {
+      "key": "Q3_naive",
+      "p50_us": 524,
+      "p95_us": 1450,
+      "p99_us": 4259,
+      "result_count": 113
+    },
+    {
+      "key": "Q3_v0",
+      "p50_us": 497,
+      "p95_us": 1345,
+      "p99_us": 4069,
+      "result_count": 113
+    },
+    {
+      "key": "Q3_v1",
+      "p50_us": 497,
+      "p95_us": 1399,
+      "p99_us": 4283,
+      "result_count": 113
+    },
+    {
+      "key": "Q3_v2",
+      "p50_us": 496,
+      "p95_us": 1424,
+      "p99_us": 4067,
+      "result_count": 113
+    },
+    {
+      "key": "Q4_naive",
+      "p50_us": 16703,
+      "p95_us": 17071,
+      "p99_us": 23983,
+      "result_count": 10
+    },
+    {
+      "key": "Q4_v0",
+      "p50_us": 17023,
+      "p95_us": 19231,
+      "p99_us": 24863,
+      "result_count": 10
+    },
+    {
+      "key": "Q4_v1",
+      "p50_us": 16783,
+      "p95_us": 17295,
+      "p99_us": 25567,
+      "result_count": 10
+    },
+    {
+      "key": "Q4_v2",
+      "p50_us": 1511,
+      "p95_us": 1792,
+      "p99_us": 8171,
+      "result_count": 10
+    },
+    {
+      "key": "Q5_naive",
+      "p50_us": 31183,
+      "p95_us": 33151,
+      "p99_us": 38751,
+      "result_count": 0
+    },
+    {
+      "key": "Q5_v0",
+      "p50_us": 31071,
+      "p95_us": 32575,
+      "p99_us": 38175,
+      "result_count": 0
+    },
+    {
+      "key": "Q5_v1",
+      "p50_us": 31327,
+      "p95_us": 38815,
+      "p99_us": 42047,
+      "result_count": 0
+    },
+    {
+      "key": "Q5_v2",
+      "p50_us": 17631,
+      "p95_us": 18367,
+      "p99_us": 24655,
+      "result_count": 10
+    },
+    {
+      "key": "Q6_naive",
+      "p50_us": 47327,
+      "p95_us": 52415,
+      "p99_us": 58687,
+      "result_count": 10
+    },
+    {
+      "key": "Q6_v0",
+      "p50_us": 47455,
+      "p95_us": 51967,
+      "p99_us": 60223,
+      "result_count": 10
+    },
+    {
+      "key": "Q6_v1",
+      "p50_us": 47391,
+      "p95_us": 51839,
+      "p99_us": 58655,
+      "result_count": 10
+    },
+    {
+      "key": "Q6_v2",
+      "p50_us": 47231,
+      "p95_us": 51807,
+      "p99_us": 58655,
+      "result_count": 10
+    },
+    {
+      "key": "Q7_naive",
+      "p50_us": 47743,
+      "p95_us": 55295,
+      "p99_us": 59135,
+      "result_count": 10
+    },
+    {
+      "key": "Q7_v0",
+      "p50_us": 48159,
+      "p95_us": 55871,
+      "p99_us": 61503,
+      "result_count": 10
+    },
+    {
+      "key": "Q7_v1",
+      "p50_us": 47871,
+      "p95_us": 49407,
+      "p99_us": 59615,
+      "result_count": 10
+    },
+    {
+      "key": "Q7_v2",
+      "p50_us": 19455,
+      "p95_us": 22175,
+      "p99_us": 28303,
+      "result_count": 10
+    }
+  ]
+}

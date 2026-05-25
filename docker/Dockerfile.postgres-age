@@ -1,0 +1,74 @@
+# ResearchDB · PostgreSQL 16 + pgvector + pg_search (ParadeDB) + Apache AGE
+#
+# Built on apache/age:release_PG16_1.6.0 (Debian 13 trixie) so we inherit a
+# known-good PG16 + AGE 1.6.0 install. We add:
+#   * pgvector — built from source (small, deterministic).
+#   * pg_search — ParadeDB's vendored .deb for trixie matching the base arch.
+#
+# This is Phase 1 B1's full deliverable; the AGE-only path remains available
+# as docker-compose.yml's `db` service (image:) for cases where pg_search /
+# pgvector aren't needed (e.g. the Week 1 smoke gate already passed without
+# them).
+
+ARG  PGVECTOR_REF=v0.8.0
+ARG  PG_SEARCH_VERSION=0.23.4
+
+FROM apache/age:release_PG16_1.6.0 AS pgvector-build
+
+USER root
+
+# Build deps + the pgvector tree itself. We use git ls-remote to capture the
+# resolved commit for traceability — handy when a regression bisects to a
+# pgvector change.
+ARG PGVECTOR_REF
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential clang llvm-dev libclang-dev pkg-config \
+        postgresql-server-dev-16 ca-certificates git \
+ && rm -rf /var/lib/apt/lists/* \
+ && git clone --depth 1 --branch ${PGVECTOR_REF} https://github.com/pgvector/pgvector.git /tmp/pgvector \
+ && cd /tmp/pgvector \
+ && make OPTFLAGS="" \
+ && make install \
+ && rm -rf /tmp/pgvector
+
+
+# ------------- Final image -------------
+FROM apache/age:release_PG16_1.6.0
+
+USER root
+
+ARG PG_SEARCH_VERSION
+
+# Bring pgvector binaries + extension files over from the build stage.
+COPY --from=pgvector-build /usr/lib/postgresql/16/lib/vector.so       /usr/lib/postgresql/16/lib/
+COPY --from=pgvector-build /usr/share/postgresql/16/extension/vector* /usr/share/postgresql/16/extension/
+
+# pg_search via ParadeDB's prebuilt .deb. trixie-matched, arch-detected.
+# The .deb pulls in libstdc++ etc. from the base image's existing packages.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates libicu-dev \
+ && ARCH="$(dpkg --print-architecture)" \
+ && URL="https://github.com/paradedb/paradedb/releases/download/v${PG_SEARCH_VERSION}/postgresql-16-pg-search_${PG_SEARCH_VERSION}-1PARADEDB-trixie_${ARCH}.deb" \
+ && echo "→ fetching $URL" \
+ && curl -fsSL -o /tmp/pg_search.deb "$URL" \
+ && apt-get install -y --no-install-recommends /tmp/pg_search.deb \
+ && rm /tmp/pg_search.deb \
+ && apt-get purge -y curl \
+ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
+
+# pg_search and AGE both want preload entries. Override the default command
+# to include vector + pg_search alongside age. Postgres entrypoint scripts
+# from the base image still run.
+#
+# search_path is handled in scripts/init-extensions.sql via ALTER ROLE,
+# so the search_path -c flag from compose stays.
+
+# Init-extensions SQL is mounted via compose, but we also ship the same
+# file inside the image for stand-alone tests.
+COPY scripts/init-extensions.sql /docker-entrypoint-initdb.d/00-extensions.sql
+
+LABEL org.opencontainers.image.title="researchdb-postgres" \
+      org.opencontainers.image.description="PG16 + pgvector + pg_search + Apache AGE" \
+      researchdb.pgvector.ref="${PGVECTOR_REF}" \
+      researchdb.pg_search.version="${PG_SEARCH_VERSION}"
