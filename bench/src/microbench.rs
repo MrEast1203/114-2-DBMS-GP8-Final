@@ -1,18 +1,14 @@
-//! AGE cost-function micro-benchmark (Phase 1 §D5 — first iteration).
+//! BFS cost-function micro-benchmark.
 //!
-//! v0's cost model is `cost = depth × branching`, a textbook linear-in-
-//! both estimate. Real AGE BFS latency on our 5K-paper graph grows much
-//! faster than that — visible in the §A1 smoke report (depth-3 high
-//! P50 is ~1.6 s, while v0 predicts only 3× over depth-1).
-//!
-//! This subcommand runs BFS depth ∈ {1, 2, 3} from anchors sampled
-//! across three out-degree buckets (low / mid / high), records P50
-//! latency, and fits two candidate models against the data:
-//!
-//!   1. **v0 (linear)**: `cost ∝ depth × branching`
-//!   2. **v1 (exponential)**: `cost ∝ branching^depth`
-//!
-//! Output a JSON report and a log line that suggests the better fit.
+//! BFS frontier grows geometrically — at depth d with average
+//! branching b, the cost should scale as `b^d` (depth 1 visits b
+//! nodes, depth 2 visits b², depth 3 visits b³). This subcommand
+//! confirms that empirically: runs BFS depth ∈ {1, 2, 3} from anchors
+//! sampled across three out-degree buckets (low / mid / high), records
+//! P50 latency, and fits two candidate single-coefficient models
+//! against the data — a linear baseline and the exponential model — so
+//! the residual difference can be reported numerically. The
+//! exponential form is what `cost::age_cost_v1` uses.
 
 use anyhow::Result;
 use clap::Args;
@@ -46,11 +42,11 @@ pub struct Cell {
 pub struct Report {
     pub schema: &'static str,
     pub cells:  Vec<Cell>,
-    pub v0_residual_sse:  f64,
-    pub v1_residual_sse:  f64,
-    pub better:           &'static str,
-    pub v0_coef:          f64,
-    pub v1_coef:          f64,
+    pub linear_residual_sse:      f64,
+    pub exponential_residual_sse: f64,
+    pub better:                   &'static str,
+    pub linear_coef:              f64,
+    pub exponential_coef:         f64,
 }
 
 pub async fn run(pool: &PgPool, args: MicroArgs) -> Result<()> {
@@ -115,37 +111,37 @@ pub async fn run(pool: &PgPool, args: MicroArgs) -> Result<()> {
 
     // Fit two models. Both are single-coefficient: latency = k × predictor.
     // Fit k by least squares: k = Σ(y x) / Σ(x²).
-    let mut sum_v0 = 0.0; let mut sumsq_v0 = 0.0;
-    let mut sum_v1 = 0.0; let mut sumsq_v1 = 0.0;
+    let mut sum_lin = 0.0; let mut sumsq_lin = 0.0;
+    let mut sum_exp = 0.0; let mut sumsq_exp = 0.0;
     for c in &cells {
         let y = c.p50_ms;
-        let x0 = c.depth as f64 * c.branching;
-        let x1 = c.branching.powf(c.depth as f64);
-        sum_v0 += y * x0;  sumsq_v0 += x0 * x0;
-        sum_v1 += y * x1;  sumsq_v1 += x1 * x1;
+        let x_lin = c.depth as f64 * c.branching;
+        let x_exp = c.branching.powf(c.depth as f64);
+        sum_lin += y * x_lin;  sumsq_lin += x_lin * x_lin;
+        sum_exp += y * x_exp;  sumsq_exp += x_exp * x_exp;
     }
-    let v0_coef = if sumsq_v0 > 0.0 { sum_v0 / sumsq_v0 } else { 0.0 };
-    let v1_coef = if sumsq_v1 > 0.0 { sum_v1 / sumsq_v1 } else { 0.0 };
+    let linear_coef      = if sumsq_lin > 0.0 { sum_lin / sumsq_lin } else { 0.0 };
+    let exponential_coef = if sumsq_exp > 0.0 { sum_exp / sumsq_exp } else { 0.0 };
 
     // Residual SSE per model.
-    let mut sse0 = 0.0; let mut sse1 = 0.0;
+    let mut sse_lin = 0.0; let mut sse_exp = 0.0;
     for c in &cells {
         let y = c.p50_ms;
-        let pred0 = v0_coef * (c.depth as f64 * c.branching);
-        let pred1 = v1_coef * c.branching.powf(c.depth as f64);
-        sse0 += (y - pred0).powi(2);
-        sse1 += (y - pred1).powi(2);
+        let pred_lin = linear_coef      * (c.depth as f64 * c.branching);
+        let pred_exp = exponential_coef * c.branching.powf(c.depth as f64);
+        sse_lin += (y - pred_lin).powi(2);
+        sse_exp += (y - pred_exp).powi(2);
     }
-    let better = if sse1 < sse0 { "v1 (branching^depth)" } else { "v0 (depth × branching)" };
+    let better = if sse_exp < sse_lin { "exponential" } else { "linear" };
 
     let report = Report {
-        schema: "researchdb.phase1.microbench_age.v1",
+        schema: "researchdb.phase1.microbench_age.v2",
         cells: cells.clone(),
-        v0_residual_sse: sse0,
-        v1_residual_sse: sse1,
+        linear_residual_sse:      sse_lin,
+        exponential_residual_sse: sse_exp,
         better,
-        v0_coef,
-        v1_coef,
+        linear_coef,
+        exponential_coef,
     };
 
     let json = serde_json::to_string_pretty(&report)?;
@@ -154,8 +150,8 @@ pub async fn run(pool: &PgPool, args: MicroArgs) -> Result<()> {
     std::fs::write(&path, &json)?;
     println!("{json}");
     tracing::info!(
-        v0_sse = sse0, v1_sse = sse1, better,
-        "AGE cost model fit complete"
+        linear_sse = sse_lin, exponential_sse = sse_exp, better,
+        "BFS cost model fit complete"
     );
     Ok(())
 }

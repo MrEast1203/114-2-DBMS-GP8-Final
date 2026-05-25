@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Phase 1 §D6 — cost regression suite.
+"""Cost regression suite.
 
-Runs the 14-cell benchmark (7 queries × {naive, v0}) and compares the
-P50/P95 of each cell against a checked-in baseline. Cells regressing
-beyond `--threshold` (default 10%) are flagged; the script exits non-zero
-so CI can gate PR merges.
+Runs the 21-cell benchmark (7 queries × {naive, v1, v2}) and compares
+the P50/P95 of each cell against a checked-in baseline. Cells regressing
+beyond `--threshold` (default 10%) are flagged; the script exits
+non-zero so CI can gate PR merges.
 
 Usage:
   uv run python eval/regress.py                   # compare to baseline
@@ -25,7 +25,7 @@ BASELINE_PATH = Path("benchmarks/regression/baseline.json")
 
 
 def run_demo(samples: int) -> dict:
-    """Invoke scripts/demo_14cells.py with --out /dev/null and capture
+    """Invoke scripts/demo_21cells.py with --out /dev/null and capture
     its written report by intercepting stdout? Simpler: re-implement
     the cell loop here to keep dependencies tight."""
     bench = os.environ.get("BENCH", "./target/release/researchdb-bench")
@@ -35,7 +35,7 @@ def run_demo(samples: int) -> dict:
 
     cells = []
     for q in range(1, 8):
-        for plan in ("naive", "v0", "v1", "v2"):
+        for plan in ("naive", "v1", "v2"):
             cmd = [
                 bench, "seven",
                 "--plan", plan, "--query", str(q),
@@ -101,7 +101,7 @@ def main() -> None:
                         "or after intentional perf changes).")
     args = p.parse_args()
 
-    print("→ running 14 cells…", file=sys.stderr)
+    print("→ running 21 cells…", file=sys.stderr)
     current = run_demo(args.samples)
 
     if args.update or not args.baseline.exists():
@@ -133,7 +133,7 @@ def main() -> None:
               file=sys.stderr)
         sys.exit(1)
     else:
-        print(f"\n✓ all 14 cells within ±{args.threshold*100:.0f}% of baseline.")
+        print(f"\n✓ all 21 cells within ±{args.threshold*100:.0f}% of baseline.")
 
 
 if __name__ == "__main__":

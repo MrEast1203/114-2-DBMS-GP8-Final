@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Run naive vs v0 across all labelled queries and compute Phase 1 §E4
-consistency metrics: NDCG@10, Jaccard@10, RBO@10.
+"""Run naive / v1 / v2 across all labelled queries and compute Phase 1
+§E4 consistency metrics: NDCG@10, Jaccard@10, RBO@10. All Jaccard / RBO
+comparisons use `naive` as the baseline (v1 vs naive, v2 vs naive).
 
 For each query in eval/queries.jsonl, we invoke researchdb-bench seven
 once per plan and parse the resulting top-k. Latency is collected
@@ -127,10 +128,9 @@ def main():
             print(f"  skip {qid}: no ground truth (empty pool)", file=sys.stderr)
             continue
 
-        naive_top, n_p50, n_p95 = run_bench("naive", q, args.k, args.samples)
-        v0_top,    v_p50, v_p95 = run_bench("v0",    q, args.k, args.samples)
-        v1_top,    v1_p50, v1_p95 = run_bench("v1",  q, args.k, args.samples)
-        v2_top,    v2_p50, v2_p95 = run_bench("v2",  q, args.k, args.samples)
+        naive_top, n_p50, n_p95   = run_bench("naive", q, args.k, args.samples)
+        v1_top,    v1_p50, v1_p95 = run_bench("v1",    q, args.k, args.samples)
+        v2_top,    v2_p50, v2_p95 = run_bench("v2",    q, args.k, args.samples)
 
         # Hard / soft equivalence depending on QueryType.
         is_single = q["type"] in ("Q1", "Q2", "Q3")
@@ -138,29 +138,24 @@ def main():
             "qid":   qid,
             "type":  q["type"],
             "desc":  q["desc"],
-            "naive": {"top": naive_top, "p50_ms": n_p50, "p95_ms": n_p95},
-            "v0":    {"top": v0_top,    "p50_ms": v_p50, "p95_ms": v_p95},
+            "naive": {"top": naive_top, "p50_ms": n_p50,  "p95_ms": n_p95},
             "v1":    {"top": v1_top,    "p50_ms": v1_p50, "p95_ms": v1_p95},
             "v2":    {"top": v2_top,    "p50_ms": v2_p50, "p95_ms": v2_p95},
-            "ndcg10_naive": ndcg(naive_top, rel[qid], args.k),
-            "ndcg10_v0":    ndcg(v0_top,    rel[qid], args.k),
-            "ndcg10_v1":    ndcg(v1_top,    rel[qid], args.k),
-            "ndcg10_v2":    ndcg(v2_top,    rel[qid], args.k),
-            "jaccard10_v0_naive": jaccard(naive_top, v0_top, args.k),
-            "jaccard10_v1_v0":    jaccard(v0_top,    v1_top, args.k),
-            "jaccard10_v2_v0":    jaccard(v0_top,    v2_top, args.k),
-            "rbo10_v0_naive":     rbo(naive_top, v0_top, p=0.9, k=args.k),
-            "rbo10_v1_v0":        rbo(v0_top,    v1_top, p=0.9, k=args.k),
-            "rbo10_v2_v0":        rbo(v0_top,    v2_top, p=0.9, k=args.k),
-            "equiv":        "hard" if is_single else "soft",
+            "ndcg10_naive":         ndcg(naive_top, rel[qid], args.k),
+            "ndcg10_v1":            ndcg(v1_top,    rel[qid], args.k),
+            "ndcg10_v2":            ndcg(v2_top,    rel[qid], args.k),
+            "jaccard10_v1_naive":   jaccard(naive_top, v1_top, args.k),
+            "jaccard10_v2_naive":   jaccard(naive_top, v2_top, args.k),
+            "rbo10_v1_naive":       rbo(naive_top, v1_top, p=0.9, k=args.k),
+            "rbo10_v2_naive":       rbo(naive_top, v2_top, p=0.9, k=args.k),
+            "equiv":                "hard" if is_single else "soft",
         }
         rows.append(row)
         print(f"  {qid:>6}  type={q['type']}  "
               f"naive ndcg={row['ndcg10_naive']:.2f} p50={n_p50:5.1f} | "
-              f"v0 ndcg={row['ndcg10_v0']:.2f} p50={v_p50:5.1f} | "
               f"v1 ndcg={row['ndcg10_v1']:.2f} p50={v1_p50:5.1f} | "
               f"v2 ndcg={row['ndcg10_v2']:.2f} p50={v2_p50:5.1f} | "
-              f"J(v2,v0)={row['jaccard10_v2_v0']:.2f}",
+              f"J(v2,naive)={row['jaccard10_v2_naive']:.2f}",
               file=sys.stderr)
 
     # Aggregate
@@ -169,26 +164,22 @@ def main():
         return statistics.mean(xs) if xs else float("nan")
 
     summary = {
-        "n_queries":          len(rows),
-        "mean_ndcg10_naive":  mean(r["ndcg10_naive"] for r in rows),
-        "mean_ndcg10_v0":     mean(r["ndcg10_v0"]    for r in rows),
-        "mean_ndcg10_v1":     mean(r["ndcg10_v1"]    for r in rows),
-        "mean_ndcg10_v2":     mean(r["ndcg10_v2"]    for r in rows),
-        "mean_jaccard10_v0_naive": mean(r["jaccard10_v0_naive"] for r in rows),
-        "mean_jaccard10_v1_v0":    mean(r["jaccard10_v1_v0"]    for r in rows),
-        "mean_jaccard10_v2_v0":    mean(r["jaccard10_v2_v0"]    for r in rows),
-        "mean_rbo10_v0_naive":     mean(r["rbo10_v0_naive"]     for r in rows),
-        "mean_rbo10_v1_v0":        mean(r["rbo10_v1_v0"]        for r in rows),
-        "mean_rbo10_v2_v0":        mean(r["rbo10_v2_v0"]        for r in rows),
-        "naive_mean_p50_ms":  mean(r["naive"]["p50_ms"] for r in rows),
-        "v0_mean_p50_ms":     mean(r["v0"]["p50_ms"]    for r in rows),
-        "v1_mean_p50_ms":     mean(r["v1"]["p50_ms"]    for r in rows),
-        "v2_mean_p50_ms":     mean(r["v2"]["p50_ms"]    for r in rows),
+        "n_queries":               len(rows),
+        "mean_ndcg10_naive":       mean(r["ndcg10_naive"] for r in rows),
+        "mean_ndcg10_v1":          mean(r["ndcg10_v1"]    for r in rows),
+        "mean_ndcg10_v2":          mean(r["ndcg10_v2"]    for r in rows),
+        "mean_jaccard10_v1_naive": mean(r["jaccard10_v1_naive"] for r in rows),
+        "mean_jaccard10_v2_naive": mean(r["jaccard10_v2_naive"] for r in rows),
+        "mean_rbo10_v1_naive":     mean(r["rbo10_v1_naive"]     for r in rows),
+        "mean_rbo10_v2_naive":     mean(r["rbo10_v2_naive"]     for r in rows),
+        "naive_mean_p50_ms":       mean(r["naive"]["p50_ms"] for r in rows),
+        "v1_mean_p50_ms":          mean(r["v1"]["p50_ms"]    for r in rows),
+        "v2_mean_p50_ms":          mean(r["v2"]["p50_ms"]    for r in rows),
     }
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps({
-        "schema":  "researchdb.phase1.e4_eval.v1",
+        "schema":  "researchdb.phase1.e4_eval.v2",
         "summary": summary,
         "rows":    rows,
     }, indent=2))

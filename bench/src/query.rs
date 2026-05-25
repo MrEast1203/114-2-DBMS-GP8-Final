@@ -82,7 +82,7 @@ pub struct QuerySpec {
     pub k: usize,
     /// AGE BFS depth bound (1..=3 for Phase 1).
     pub depth: u32,
-    /// HNSW ef_search; v0 fixes per query type, final makes adaptive.
+    /// HNSW ef_search; fixed per query type for this benchmark.
     pub ef_search: u32,
 }
 

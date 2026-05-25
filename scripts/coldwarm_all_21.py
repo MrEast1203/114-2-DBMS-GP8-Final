@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Phase 1 §9 limitation fix: cold OS-drop full sweep.
+"""Cold OS-drop full sweep.
 
-Runs bench cold-warm with --cold-method container-restart on all 28
-cells (7 queries × 4 plans). Reports per-cell cold P50, warm P50, and
-the cold/warm ratio.
+Runs bench cold-warm with --cold-method container-restart on all 21
+cells (7 queries × 3 plans: naive, v1, v2). Reports per-cell cold P50,
+warm P50, and the cold/warm ratio.
 
 container-restart strategy is portable across macOS / WSL / Linux —
 unlike /proc/sys/vm/drop_caches which is read-only on macOS Docker.
@@ -48,7 +48,7 @@ def main():
     print(f"{'cell':<10} {'cold ms':>9} {'warm ms':>9} {'ratio':>7}", file=sys.stderr)
     print("-" * 45, file=sys.stderr)
     for q in range(1, 8):
-        for plan in ("naive", "v0", "v1", "v2"):
+        for plan in ("naive", "v1", "v2"):
             r = run_cell(q, plan)
             if "error" in r:
                 print(f"Q{q} {plan:<5}  ERROR  {r['error']}", file=sys.stderr)
@@ -67,14 +67,14 @@ def main():
             })
 
     out = {
-        "schema": "researchdb.phase1.coldwarm_full.v1",
+        "schema": "researchdb.phase1.coldwarm_full.v2",
         "method": "container-restart",
         "samples_per_cell": 5,
         "warmup_per_cell": 5,
         "cells": cells,
     }
-    Path("reports/coldwarm_full_28.json").write_text(json.dumps(out, indent=2))
-    print("\nwrote reports/coldwarm_full_28.json")
+    Path("reports/coldwarm_full_21.json").write_text(json.dumps(out, indent=2))
+    print("\nwrote reports/coldwarm_full_21.json")
 
 
 if __name__ == "__main__":

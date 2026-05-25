@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Phase 1 §E6 — 14-cell demo runner.
+"""21-cell demo runner.
 
-Runs all 7 query types × 2 plans (naive, v0) on the current DB and
+Runs all 7 query types × 3 plans (naive, v1, v2) on the current DB and
 prints a comparison table; writes a JSON summary to reports/.
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ def main() -> None:
     p.add_argument("--bm25-text", default="neural network")
     p.add_argument("--ef-search", type=int, default=40)
     p.add_argument("--out", type=Path,
-                   default=Path(f"reports/demo_14cells_{dt.datetime.now():%Y%m%d_%H%M%S}.json"))
+                   default=Path(f"reports/demo_21cells_{dt.datetime.now():%Y%m%d_%H%M%S}.json"))
     args = p.parse_args()
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -58,7 +58,7 @@ def main() -> None:
 
     cells = []
     for q in range(1, 8):
-        for plan in ("naive", "v0", "v1", "v2"):
+        for plan in ("naive", "v1", "v2"):
             r = run_cell(args.bench, plan, q, args)
             if "error" in r:
                 print(f"  Q{q}  {plan:<5}  ERROR  {r['error']}")

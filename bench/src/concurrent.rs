@@ -25,13 +25,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
-use crate::plan::{self, NaivePlan, V0Plan, V1Plan, V2Plan};
+use crate::plan::{self, NaivePlan, V1Plan, V2Plan};
 use crate::query::{QuerySpec, QueryType};
 
 #[derive(Args, Debug, Clone)]
 pub struct ConcurrentArgs {
     #[arg(long)] pub query: u8,
-    #[arg(long, default_value = "v0")] pub plan: String,
+    #[arg(long, default_value = "v1")] pub plan: String,
     /// Comma-separated concurrency levels to test, e.g. "1,4,8,16".
     #[arg(long, default_value = "1,4,8,16,32")]
     pub concurrency: String,
@@ -154,7 +154,6 @@ pub async fn run(pool: &PgPool, args: ConcurrentArgs) -> Result<()> {
 fn make_plan(name: &str) -> Result<Box<dyn plan::Plan + Send + Sync>> {
     Ok(match name {
         "naive" => Box::new(NaivePlan),
-        "v0"    => Box::new(V0Plan::new()),
         "v1"    => Box::new(V1Plan),
         "v2"    => Box::new(V2Plan),
         other   => return Err(anyhow::anyhow!("unknown plan {other}")),

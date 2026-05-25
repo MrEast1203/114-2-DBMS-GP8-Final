@@ -9,7 +9,7 @@
 #
 # Phase 1 main body (later):
 #   make ingest      # fetch real OpenAlex subgraph (requires OPENALEX_MAILTO)
-#   make bench       # full 7 × 2 benchmark cells (after orchestrator lands)
+#   make bench       # full 7 × 3 benchmark cells (after orchestrator lands)
 
 .PHONY: help up down logs migrate synth load smoke ingest test build clean reset fmt
 
@@ -60,8 +60,8 @@ smoke: build         ## Run AGE smoke test → reports/age_smoke_$(shell date +%
 	   --samples 100 --timeout-sec 60 --out $$OUT; \
 	echo "→ $$OUT"
 
-demo: build          ## 14-cell demo · 7 queries × 2 plans · table + JSON
-	uv run python scripts/demo_14cells.py
+demo: build          ## 21-cell demo · 7 queries × 3 plans · table + JSON
+	uv run python scripts/demo_21cells.py
 
 eval: build          ## §E4 NDCG / Jaccard / RBO evaluation against ground truth
 	uv run python eval/evaluate.py --samples 10
@@ -72,8 +72,8 @@ ef-sweep: build      ## §E2 ef_search latency-recall sweep
 storage: build       ## §E5 storage overhead report
 	./target/release/researchdb-bench storage
 
-cold-warm: build     ## §E1 cold/warm latency for one query (default Q1 v0)
-	./target/release/researchdb-bench cold-warm --query 1 --plan v0 --samples 30 --warmup 5
+cold-warm: build     ## §E1 cold/warm latency for one query (default Q1 v1)
+	./target/release/researchdb-bench cold-warm --query 1 --plan v1 --samples 30 --warmup 5
 
 health: build        ## DB connectivity + AGE extension check
 	./target/release/researchdb-bench health

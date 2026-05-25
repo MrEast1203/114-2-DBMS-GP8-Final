@@ -9,7 +9,7 @@
 //!     AGE-derived boolean filters whose scores live on different scales.
 //!   * **Linear** — Σ w_i × normalize(score_i, "minmax").
 //!     Used as ablation: gives RRF something to beat. The orchestrator
-//!     never picks this for v0 (the plan recommends RRF), but the cost
+//!     never picks this (RRF is the production strategy), but the cost
 //!     regression suite tracks it so degradation in linear is visible
 //!     too.
 //!

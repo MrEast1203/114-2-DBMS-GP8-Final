@@ -1,5 +1,4 @@
-//! v0 cost function — researchdb-plan.html §Phase 1 / "v0 cost function
-//! baseline (第一週可跑)".
+//! Per-engine cost functions used by the v1 cost-reordering plan.
 //!
 //! All three engines' costs are dimensionless after normalization. We
 //! divide each engine's raw cost by its dry-run median latency (in
@@ -7,15 +6,14 @@
 //! predicate whose ACTUAL wall-time we expect to be smallest — not just
 //! the one with the smallest theoretical FLOP count.
 //!
-//! v0 values come from textbook / vendor docs:
+//! Formulas:
 //!   * HNSW       : cost = ef_search × log(n)         (Malkov & Yashunin '20)
 //!   * BM25       : cost = candidate_set × avg_posting (ParadeDB docs)
-//!   * BFS (AGE)  : cost = depth × avg_branching      (any graph DB primer)
-//!
-//! These coefficients are intentionally NOT precise. The final cost
-//! function lives in researchdb-plan.html §Phase 1 / D5 and gets
-//! empirically tuned via micro-benchmarks. v0 exists so that the very
-//! first benchmark run produces *something* to compare against.
+//!   * BFS (AGE)  : cost = branching ^ depth          (geometric — frontier
+//!                                                     grows as b^d per
+//!                                                     depth level; fit
+//!                                                     empirically by
+//!                                                     `microbench`)
 
 use serde::Serialize;
 
@@ -26,7 +24,7 @@ use serde::Serialize;
 pub struct EngineNorm {
     pub pgvector_ms_unit: f64,  // ms per `ef_search × log(n)` unit
     pub pg_search_ms_unit: f64, // ms per `candidate × posting` unit
-    pub age_ms_unit: f64,       // ms per `depth × branching` unit
+    pub age_ms_unit: f64,       // ms per `branching ^ depth` unit
 }
 
 impl Default for EngineNorm {
@@ -60,26 +58,14 @@ pub fn pg_search_cost(candidate_set: usize, avg_posting: f64) -> f64 {
     (candidate_set as f64) * avg_posting.max(1.0)
 }
 
-/// BFS theoretical cost — **v0** textbook model: `depth × branching`.
-/// Linear in both. Easy to compute, but empirically under-predicts
-/// real AGE latency at depth ≥ 2 by an order of magnitude.
-pub fn age_cost(depth: u32, avg_branching: f64) -> f64 {
-    let depth = depth.max(1) as f64;
-    let branching = avg_branching.max(1.0);
-    depth * branching
-}
-
-/// BFS empirical cost — **v1** model: `branching^depth`.
+/// BFS empirical cost: `branching ^ depth`.
 ///
-/// First-iteration refinement from `bench micro-bench-age` (Phase 1
-/// §D5). Real AGE latency on the 5K-paper graph fits this exponential
-/// model with SSE ≈ 10,000 vs ≈ 329,000 for v0 (32× better residual).
-/// Coefficient (per the micro-benchmark fit) is ~0.030 ms per unit, but
-/// we keep the cost dimensionless here — normalization happens in
+/// BFS frontier grows geometrically — depth 1 visits b nodes, depth 2
+/// visits b², depth 3 visits b³ — so total work is `b^d`. Real BFS
+/// latency on the 5K-paper graph fits this model with coefficient
+/// ~0.030 ms per unit, captured by `bench micro-bench-age`. We keep
+/// cost dimensionless here — normalization happens in
 /// `EngineNorm::age_ms_unit`.
-///
-/// Use this in the orchestrator's v1 plan; v0 retains the linear form
-/// for ablation comparisons.
 pub fn age_cost_v1(depth: u32, avg_branching: f64) -> f64 {
     let depth = depth.max(1) as f64;
     let branching = avg_branching.max(1.0);
@@ -99,8 +85,8 @@ pub fn normalize(raw: f64, engine: Engine, norm: &EngineNorm) -> f64 {
 /// Selectivity ∈ [0.0, 1.0] — the fraction of rows the predicate is
 /// expected to retain. Smaller = more selective = should run earlier.
 ///
-/// For Phase 1 v0 we use crude estimators per engine; D2-D5 replace them
-/// with cardinality-aware ones.
+/// Crude per-engine estimators; tighter ones would need full cardinality
+/// statistics from each index.
 pub fn selectivity_semantic(k_topk: usize, n_corpus: usize) -> f64 {
     if n_corpus == 0 {
         return 1.0;
@@ -173,15 +159,8 @@ mod tests {
     }
 
     #[test]
-    fn age_cost_minima() {
-        assert!(age_cost(0, 0.5) >= age_cost(1, 1.0).min(1.0));
-        // depth=1 branching=1 should be the minimum unit.
-        assert!((age_cost(1, 1.0) - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
     fn age_cost_v1_exponential_in_depth() {
-        // v1 grows multiplicatively per depth increment.
+        // BFS cost grows multiplicatively per depth increment.
         let b = 10.0_f64;
         let d1 = age_cost_v1(1, b);
         let d2 = age_cost_v1(2, b);
@@ -192,11 +171,10 @@ mod tests {
     }
 
     #[test]
-    fn age_cost_v1_dominates_v0_at_high_depth() {
-        // v0 is linear; v1 is exponential. v1 should dwarf v0 for depth=3
-        // and large branching — the empirically validated regime.
-        let b = 30.0;
-        assert!(age_cost_v1(3, b) > 100.0 * age_cost(3, b));
+    fn age_cost_v1_dominates_at_high_depth() {
+        // Geometric growth: at depth=3, b=30 should yield 27_000.
+        let b = 30.0_f64;
+        assert!(age_cost_v1(3, b) > 20_000.0);
     }
 
     #[test]

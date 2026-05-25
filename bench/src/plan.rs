@@ -1,13 +1,13 @@
-//! Plan trait + Naive sequential plan + v0 cost-based plan.
+//! Plan trait + three orchestrator implementations: naive (fixed order),
+//! v1 (cost-based reorder), v2 (cost-based reorder + graph push-down).
 //!
-//! Phase 1 status:
-//!   * Q1 (semantic) — both plans implemented end-to-end. Single-predicate,
-//!     so they're functionally identical; benchmarking still distinguishes
-//!     orchestrator wrapper overhead.
-//!   * Q2 / Q3 — single-predicate, fall back to single engine; same story
-//!     as Q1.
-//!   * Q4 / Q5 / Q6 / Q7 — TODO. Will land as orchestrator v0 work proceeds.
-//!     Currently return PlanResult { rows: vec![], plan: "todo", ... }.
+//! In this pipeline (top-K rankers fused by RRF, no data dependency
+//! between engines) pure cost-based *reordering* does not change
+//! runtime: every engine still has to run to completion, and there is
+//! no short-circuit opportunity. v1 is preserved as the clean
+//! reorder-only ablation that demonstrates this. v2 is the version
+//! that moves the needle, by *push-down* — rewriting the ranker SQL
+//! to scan only inside the graph filter set.
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -44,7 +44,7 @@ pub struct PlanResult {
     /// Whether an intermediate result was materialized (naive truth).
     pub materializations: u32,
     /// The order engines actually ran in. For naive this is fixed
-    /// insertion order; for v0 it follows ascending selectivity.
+    /// insertion order; for v1 it follows ascending selectivity.
     pub actual_order: Vec<Engine>,
 }
 
@@ -77,54 +77,7 @@ impl Plan for NaivePlan {
             //   fully then RRF + intersect.
             QueryType::Q4 | QueryType::Q5 | QueryType::Q6 | QueryType::Q7 => {
                 multi_predicate(pool, q, spec, "naive",
-                                /* order_by_selectivity */ false,
-                                AgeModel::V0Linear).await
-            }
-        }
-    }
-}
-
-// ============ V0 ORCHESTRATOR ============
-
-/// Which AGE cost model the orchestrator uses to estimate graph cost.
-/// V0 uses the linear textbook form; V1 uses the empirical exponential
-/// form fit from `bench micro-bench-age` (Phase 1 §D5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgeModel {
-    V0Linear,
-    V1Exponential,
-}
-
-/// v0 cost-based orchestrator. Single-predicate queries collapse to the
-/// single engine (identical to naive). Multi-predicate queries enumerate
-/// candidate predicate orderings, pick by selectivity × cost.
-pub struct V0Plan {
-    pub norm: EngineNorm,
-}
-
-impl V0Plan {
-    pub fn new() -> Self {
-        Self { norm: EngineNorm::default() }
-    }
-}
-
-impl Default for V0Plan {
-    fn default() -> Self { Self::new() }
-}
-
-#[async_trait::async_trait]
-impl Plan for V0Plan {
-    fn name(&self) -> &'static str { "v0" }
-
-    async fn execute(&self, pool: &PgPool, q: QueryType, spec: &QuerySpec) -> Result<PlanResult> {
-        match q {
-            QueryType::Q1 => semantic_only(pool, spec, "v0", q).await,
-            QueryType::Q2 => lexical_only(pool, spec, "v0", q).await,
-            QueryType::Q3 => graph_only(pool, spec, "v0", q).await,
-            QueryType::Q4 | QueryType::Q5 | QueryType::Q6 | QueryType::Q7 => {
-                multi_predicate(pool, q, spec, "v0",
-                                /* order_by_selectivity */ true,
-                                AgeModel::V0Linear).await
+                                /* order_by_selectivity */ false).await
             }
         }
     }
@@ -142,7 +95,7 @@ impl Plan for V0Plan {
 /// runtime by an order of magnitude on highly-selective filters.
 ///
 /// For Q1–Q3 and Q6 (no graph-plus-ranker combination), v2 collapses
-/// to the same execution as v0 — `should_use_pushdown` returns false.
+/// to the same execution as v1 — `should_use_pushdown` returns false.
 pub struct V2Plan;
 
 impl V2Plan {
@@ -164,10 +117,9 @@ impl Plan for V2Plan {
             QueryType::Q1 => semantic_only(pool, spec, "v2", q).await,
             QueryType::Q2 => lexical_only(pool, spec, "v2", q).await,
             QueryType::Q3 => graph_only(pool, spec, "v2", q).await,
-            // Q6 has no graph predicate; fall back to v0's post-filter path.
+            // Q6 has no graph predicate; fall back to v1's post-filter path.
             QueryType::Q6 => multi_predicate(pool, q, spec, "v2",
-                                /* order_by_selectivity */ true,
-                                AgeModel::V1Exponential).await,
+                                /* order_by_selectivity */ true).await,
             // Q4 / Q5 / Q7: push graph filter into ranker SQL.
             QueryType::Q4 | QueryType::Q5 | QueryType::Q7 => {
                 multi_predicate_pushdown(pool, q, spec, "v2").await
@@ -176,15 +128,19 @@ impl Plan for V2Plan {
     }
 }
 
-// ============ V1 ORCHESTRATOR (D5 empirical AGE cost) ============
+// ============ V1 ORCHESTRATOR (cost-based reorder) ============
 
-/// v1 cost-based orchestrator. Identical to v0 except the AGE cost
-/// model uses `age_cost_v1` (branching^depth) from Phase 1 §D5
-/// micro-benchmarking. Because the actual SQL it executes is the same,
-/// final ranked results are bit-identical to v0; the difference shows
-/// up only in the orchestrator's *cost estimates* and (in principle)
-/// predicate ordering when graph cost would otherwise be
-/// underestimated.
+/// v1 cost-based orchestrator. Single-predicate queries collapse to the
+/// single engine (identical to naive). Multi-predicate queries enumerate
+/// candidate predicate orderings, then dispatch in ascending selectivity
+/// order. AGE cost uses the empirically fit `age_cost_v1`
+/// (`branching ^ depth`); see `cost.rs` and `microbench`.
+///
+/// On the 50K corpus + RRF this reorder has **no measurable latency
+/// effect** vs naive — every engine must run to completion regardless
+/// of order, and the engines have no data dependency that reorder could
+/// short-circuit. v1 is preserved as the clean "cost-reorder only"
+/// ablation that motivates v2's push-down (see report §4).
 pub struct V1Plan;
 
 #[async_trait::async_trait]
@@ -198,8 +154,7 @@ impl Plan for V1Plan {
             QueryType::Q3 => graph_only(pool, spec, "v1", q).await,
             QueryType::Q4 | QueryType::Q5 | QueryType::Q6 | QueryType::Q7 => {
                 multi_predicate(pool, q, spec, "v1",
-                                /* order_by_selectivity */ true,
-                                AgeModel::V1Exponential).await
+                                /* order_by_selectivity */ true).await
             }
         }
     }
@@ -339,7 +294,7 @@ async fn graph_only(
     // cite the anchor (Q3/Q4/Q5/Q7's "who cites this paper").
     let paper_ids = bfs_recursive_sql(pool, anchor, depth, Direction::Reverse).await?;
 
-    let raw = cost::age_cost(depth, 2.4); // 2.4 ≈ synth avg out-degree
+    let raw = cost::age_cost_v1(depth, 2.4); // 2.4 ≈ synth avg out-degree
     let norm = EngineNorm::default();
     let ms = cost::normalize(raw, Engine::Age, &norm);
     let pred = PredicateEstimate {
@@ -374,7 +329,7 @@ async fn graph_only(
 ///   * **naive**: predicates executed in fixed order (sem → lex → graph),
 ///     each materialized fully before the next runs. `first_predicate`
 ///     is sem (or lex if Q5).
-///   * **v0**:   engine order is decided by selectivity — we ask each
+///   * **v1**:   engine order is decided by selectivity — we ask each
 ///     engine for its candidate-set size first, then run the smallest
 ///     first. Graph is *always* used as the filter when present (its
 ///     selectivity is captured in `selectivity_graph`).
@@ -384,7 +339,6 @@ async fn multi_predicate(
     spec: &QuerySpec,
     plan_name: &'static str,
     order_by_selectivity: bool,
-    age_model: AgeModel,
 ) -> Result<PlanResult> {
     let (use_sem, use_lex, use_gph) = q.engines();
     let k = spec.k;
@@ -412,7 +366,7 @@ async fn multi_predicate(
         }));
     }
     if use_lex {
-        // For v0 we need an actual matched count to estimate selectivity;
+        // For v1 we need an actual matched count to estimate selectivity;
         // a single COUNT(*) is cheap.
         let text = spec.bm25_text.as_deref()
             .context("Q2/Q5/Q6/Q7 require bm25_text")?;
@@ -443,10 +397,7 @@ async fn multi_predicate(
         per_engine_rows.push((Engine::Age, ids.len()));
         actual_order.push(Engine::Age);
 
-        let raw = match age_model {
-            AgeModel::V0Linear      => cost::age_cost(depth, 26.3),
-            AgeModel::V1Exponential => cost::age_cost_v1(depth, 26.3),
-        };
+        let raw = cost::age_cost_v1(depth, 26.3);
         let ms = cost::normalize(raw, Engine::Age, &EngineNorm::default());
         predicates.push(PredicateEstimate {
             engine: Engine::Age,
@@ -748,7 +699,7 @@ mod tests {
     fn naive_plan_name() { assert_eq!(NaivePlan.name(), "naive"); }
 
     #[test]
-    fn v0_plan_name() { assert_eq!(V0Plan::new().name(), "v0"); }
+    fn v1_plan_name() { assert_eq!(V1Plan.name(), "v1"); }
 
     #[test]
     fn stub_returns_empty() {
@@ -773,7 +724,7 @@ mod tests {
         assert!(V2Plan::should_use_pushdown(QueryType::Q5));
         assert!(V2Plan::should_use_pushdown(QueryType::Q7));
 
-        // Single-engine queries collapse to v0's path — no fusion, so
+        // Single-engine queries collapse to v1's path — no fusion, so
         // no push-down to apply.
         assert!(!V2Plan::should_use_pushdown(QueryType::Q1));
         assert!(!V2Plan::should_use_pushdown(QueryType::Q2));

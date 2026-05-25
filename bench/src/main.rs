@@ -66,8 +66,8 @@ struct SevenArgs {
     /// 1..=7
     #[arg(long)]
     query: u8,
-    /// "naive" or "v0"
-    #[arg(long, default_value = "v0")]
+    /// "naive", "v1", or "v2"
+    #[arg(long, default_value = "v1")]
     plan: String,
     /// Iterations per cell.
     #[arg(long, default_value_t = 30)]
@@ -177,7 +177,6 @@ async fn run_seven(dsn: &str, args: SevenArgs) -> Result<()> {
 
     let plan_impl: Box<dyn plan::Plan + Send + Sync> = match args.plan.as_str() {
         "naive" => Box::new(plan::NaivePlan),
-        "v0"    => Box::new(plan::V0Plan::new()),
         "v1"    => Box::new(plan::V1Plan),
         "v2"    => Box::new(plan::V2Plan),
         other   => return Err(anyhow::anyhow!("unknown plan: {other}")),

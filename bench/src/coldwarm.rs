@@ -28,13 +28,13 @@ use std::process::Command;
 use std::str::FromStr;
 use std::time::Instant;
 
-use crate::plan::{NaivePlan, Plan, V0Plan, V1Plan, V2Plan};
+use crate::plan::{NaivePlan, Plan, V1Plan, V2Plan};
 use crate::query::{QuerySpec, QueryType};
 
 #[derive(Args, Debug, Clone)]
 pub struct ColdWarmArgs {
     #[arg(long)] pub query: u8,
-    #[arg(long, default_value = "v0")]    pub plan: String,
+    #[arg(long, default_value = "v1")]    pub plan: String,
     #[arg(long, default_value_t = 30)]    pub samples: usize,
     #[arg(long, default_value_t = 5)]     pub warmup: usize,
     #[arg(long, default_value = "fresh-conn")]
@@ -174,7 +174,6 @@ async fn wrap_in_pool(dsn: &str) -> Result<PgPool> {
 fn make_plan(name: &str) -> Result<Box<dyn Plan + Send + Sync>> {
     Ok(match name {
         "naive" => Box::new(NaivePlan),
-        "v0"    => Box::new(V0Plan::new()),
         "v1"    => Box::new(V1Plan),
         "v2"    => Box::new(V2Plan),
         other   => return Err(anyhow::anyhow!("unknown plan {other}")),
