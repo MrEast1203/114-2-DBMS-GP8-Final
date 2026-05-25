@@ -111,6 +111,56 @@ pub async fn bfs_recursive_sql(
         .collect())
 }
 
+/// BFS via PostgreSQL WITH RECURSIVE, returning each reached `paper_id`
+/// paired with its **minimum depth** from the anchor. Used by V3Plan
+/// (Q4 / Q5 / Q7) to derive a `graph_distance_rank` — papers closer to
+/// the anchor (smaller depth) rank higher, and the result is fed back
+/// into RRF as a third ranking signal alongside vector and BM25.
+///
+/// The CTE already tracks `d` per row; we just keep the MIN per
+/// paper_id (a paper reachable at depth 1 and depth 2 should count as
+/// depth 1).
+pub async fn bfs_recursive_sql_with_depth(
+    pool: &PgPool,
+    anchor: i64,
+    depth: u32,
+    dir: Direction,
+) -> Result<Vec<(i64, i32)>> {
+    if depth == 0 {
+        return Ok(Vec::new());
+    }
+    let sql = match dir {
+        Direction::Forward => "\
+            WITH RECURSIVE bfs(paper_id, d) AS ( \
+                SELECT dst_paper_id, 1 FROM citations WHERE src_paper_id = $1 \
+                UNION \
+                SELECT c.dst_paper_id, b.d + 1 \
+                FROM citations c JOIN bfs b ON c.src_paper_id = b.paper_id \
+                WHERE b.d < $2 \
+            ) \
+            SELECT paper_id, min(d)::int FROM bfs GROUP BY paper_id ORDER BY paper_id",
+        Direction::Reverse => "\
+            WITH RECURSIVE bfs(paper_id, d) AS ( \
+                SELECT src_paper_id, 1 FROM citations WHERE dst_paper_id = $1 \
+                UNION \
+                SELECT c.src_paper_id, b.d + 1 \
+                FROM citations c JOIN bfs b ON c.dst_paper_id = b.paper_id \
+                WHERE b.d < $2 \
+            ) \
+            SELECT paper_id, min(d)::int FROM bfs GROUP BY paper_id ORDER BY paper_id",
+    };
+    let rows = sqlx::query(sql)
+        .bind(anchor)
+        .bind(depth as i32)
+        .fetch_all(pool)
+        .await
+        .with_context(|| format!("recursive SQL BFS (with depth) failed (anchor={anchor}, depth={depth}, dir={dir:?})"))?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| Some((r.try_get::<i64, _>(0).ok()?, r.try_get::<i32, _>(1).ok()?)))
+        .collect())
+}
+
 // ----- shootout subcommand -------------------------------------------------
 
 #[derive(Args, Debug, Clone)]

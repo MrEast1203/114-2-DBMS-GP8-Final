@@ -33,6 +33,7 @@ pub enum FusionStrategy {
     Rrf { k: f64 },
     /// Linear combination of min-max normalized scores. Engine weights
     /// in the order they appear in the rankings slice.
+    #[allow(dead_code)]
     Linear { weights: Vec<f64> },
 }
 

@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Run naive / v1 / v2 across all labelled queries and compute Phase 1
-§E4 consistency metrics: NDCG@10, Jaccard@10, RBO@10. All Jaccard / RBO
-comparisons use `naive` as the baseline (v1 vs naive, v2 vs naive).
+"""Run naive / v1 / v2 / v3 across all labelled queries and compute
+Phase 1 §E4 consistency metrics: NDCG@10, Jaccard@10, RBO@10.
+
+Jaccard / RBO are reported pair-wise:
+  * v1 / v2 / v3 vs naive (baseline)
+  * v3 vs v2 (diagnostic: how much does the multi-stage push-down +
+    fusion-signal recovery move the result set?)
 
 For each query in eval/queries.jsonl, we invoke researchdb-bench seven
 once per plan and parse the resulting top-k. Latency is collected
 inline too (median across the harness's per-call timings).
 
-Output: reports/eval_phase1_e4.json
+Output: reports/eval_v3.json by default (override with --out). The
+pre-v3 baseline `reports/eval_phase1_e4.json` is deliberately not
+overwritten.
 """
 from __future__ import annotations
 
@@ -107,7 +113,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--queries", type=Path, default=Path("eval/queries.jsonl"))
     ap.add_argument("--gt", type=Path, default=Path("eval/ground-truth.jsonl"))
-    ap.add_argument("--out", type=Path, default=Path("reports/eval_phase1_e4.json"))
+    ap.add_argument("--out", type=Path, default=Path("reports/eval_v3.json"))
     ap.add_argument("--samples", type=int, default=15)
     ap.add_argument("--k", type=int, default=10)
     args = ap.parse_args()
@@ -121,42 +127,76 @@ def main():
         if r.get("label") is None: continue
         rel[r["qid"]][r["paper_id"]] = int(r["label"])
 
-    rows = []
+    PLANS = ("naive", "v1", "v2", "v3")
+
+    rows = []      # one per (qid) — bundles all four plans (back-compat shape)
+    results = []   # FLAT list of (plan, qid, ...) — used by automated checks
     for q in queries:
         qid = q["qid"]
         if qid not in rel or not rel[qid]:
             print(f"  skip {qid}: no ground truth (empty pool)", file=sys.stderr)
             continue
 
-        naive_top, n_p50, n_p95   = run_bench("naive", q, args.k, args.samples)
-        v1_top,    v1_p50, v1_p95 = run_bench("v1",    q, args.k, args.samples)
-        v2_top,    v2_p50, v2_p95 = run_bench("v2",    q, args.k, args.samples)
+        per_plan = {}
+        for plan in PLANS:
+            top, p50, p95 = run_bench(plan, q, args.k, args.samples)
+            per_plan[plan] = {"top": top, "p50_ms": p50, "p95_ms": p95}
 
-        # Hard / soft equivalence depending on QueryType.
+        # NDCG per plan
+        ndcgs = {p: ndcg(per_plan[p]["top"], rel[qid], args.k) for p in PLANS}
+
+        # Pair-wise Jaccard / RBO (all vs naive, plus v3 vs v2 diagnostic)
+        def J(a, b): return jaccard(a, b, args.k)
+        def R(a, b): return rbo(a, b, p=0.9, k=args.k)
+
+        naive_top = per_plan["naive"]["top"]
+        v2_top    = per_plan["v2"]["top"]
+        v3_top    = per_plan["v3"]["top"]
+
         is_single = q["type"] in ("Q1", "Q2", "Q3")
+
         row = {
             "qid":   qid,
             "type":  q["type"],
             "desc":  q["desc"],
-            "naive": {"top": naive_top, "p50_ms": n_p50,  "p95_ms": n_p95},
-            "v1":    {"top": v1_top,    "p50_ms": v1_p50, "p95_ms": v1_p95},
-            "v2":    {"top": v2_top,    "p50_ms": v2_p50, "p95_ms": v2_p95},
-            "ndcg10_naive":         ndcg(naive_top, rel[qid], args.k),
-            "ndcg10_v1":            ndcg(v1_top,    rel[qid], args.k),
-            "ndcg10_v2":            ndcg(v2_top,    rel[qid], args.k),
-            "jaccard10_v1_naive":   jaccard(naive_top, v1_top, args.k),
-            "jaccard10_v2_naive":   jaccard(naive_top, v2_top, args.k),
-            "rbo10_v1_naive":       rbo(naive_top, v1_top, p=0.9, k=args.k),
-            "rbo10_v2_naive":       rbo(naive_top, v2_top, p=0.9, k=args.k),
+            **{p: per_plan[p] for p in PLANS},
+            "ndcg10_naive":         ndcgs["naive"],
+            "ndcg10_v1":            ndcgs["v1"],
+            "ndcg10_v2":            ndcgs["v2"],
+            "ndcg10_v3":            ndcgs["v3"],
+            "jaccard10_v1_naive":   J(naive_top, per_plan["v1"]["top"]),
+            "jaccard10_v2_naive":   J(naive_top, v2_top),
+            "jaccard10_v3_naive":   J(naive_top, v3_top),
+            "jaccard10_v3_v2":      J(v2_top,    v3_top),
+            "rbo10_v1_naive":       R(naive_top, per_plan["v1"]["top"]),
+            "rbo10_v2_naive":       R(naive_top, v2_top),
+            "rbo10_v3_naive":       R(naive_top, v3_top),
+            "rbo10_v3_v2":          R(v2_top,    v3_top),
             "equiv":                "hard" if is_single else "soft",
         }
         rows.append(row)
-        print(f"  {qid:>6}  type={q['type']}  "
-              f"naive ndcg={row['ndcg10_naive']:.2f} p50={n_p50:5.1f} | "
-              f"v1 ndcg={row['ndcg10_v1']:.2f} p50={v1_p50:5.1f} | "
-              f"v2 ndcg={row['ndcg10_v2']:.2f} p50={v2_p50:5.1f} | "
-              f"J(v2,naive)={row['jaccard10_v2_naive']:.2f}",
-              file=sys.stderr)
+
+        # Flat per-(plan, qid) result rows for automated checks.
+        for plan in PLANS:
+            results.append({
+                "plan":   plan,
+                "qid":    qid,
+                "type":   q["type"],
+                "p50_ms": per_plan[plan]["p50_ms"],
+                "p95_ms": per_plan[plan]["p95_ms"],
+                "top":    per_plan[plan]["top"],
+                "ndcg10": ndcgs[plan],
+            })
+
+        print(
+            f"  {qid:>6}  type={q['type']}  "
+            f"naive ndcg={ndcgs['naive']:.2f} p50={per_plan['naive']['p50_ms']:5.1f} | "
+            f"v1 ndcg={ndcgs['v1']:.2f} p50={per_plan['v1']['p50_ms']:5.1f} | "
+            f"v2 ndcg={ndcgs['v2']:.2f} p50={per_plan['v2']['p50_ms']:5.1f} | "
+            f"v3 ndcg={ndcgs['v3']:.2f} p50={per_plan['v3']['p50_ms']:5.1f} | "
+            f"J(v3,v2)={row['jaccard10_v3_v2']:.2f}",
+            file=sys.stderr,
+        )
 
     # Aggregate
     def mean(xs):
@@ -168,20 +208,27 @@ def main():
         "mean_ndcg10_naive":       mean(r["ndcg10_naive"] for r in rows),
         "mean_ndcg10_v1":          mean(r["ndcg10_v1"]    for r in rows),
         "mean_ndcg10_v2":          mean(r["ndcg10_v2"]    for r in rows),
+        "mean_ndcg10_v3":          mean(r["ndcg10_v3"]    for r in rows),
         "mean_jaccard10_v1_naive": mean(r["jaccard10_v1_naive"] for r in rows),
         "mean_jaccard10_v2_naive": mean(r["jaccard10_v2_naive"] for r in rows),
+        "mean_jaccard10_v3_naive": mean(r["jaccard10_v3_naive"] for r in rows),
+        "mean_jaccard10_v3_v2":    mean(r["jaccard10_v3_v2"]    for r in rows),
         "mean_rbo10_v1_naive":     mean(r["rbo10_v1_naive"]     for r in rows),
         "mean_rbo10_v2_naive":     mean(r["rbo10_v2_naive"]     for r in rows),
+        "mean_rbo10_v3_naive":     mean(r["rbo10_v3_naive"]     for r in rows),
+        "mean_rbo10_v3_v2":        mean(r["rbo10_v3_v2"]        for r in rows),
         "naive_mean_p50_ms":       mean(r["naive"]["p50_ms"] for r in rows),
         "v1_mean_p50_ms":          mean(r["v1"]["p50_ms"]    for r in rows),
         "v2_mean_p50_ms":          mean(r["v2"]["p50_ms"]    for r in rows),
+        "v3_mean_p50_ms":          mean(r["v3"]["p50_ms"]    for r in rows),
     }
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps({
-        "schema":  "researchdb.phase1.e4_eval.v2",
+        "schema":  "researchdb.phase1.e4_eval.v3",
         "summary": summary,
         "rows":    rows,
+        "results": results,
     }, indent=2))
     print("\nsummary:", json.dumps(summary, indent=2))
     print(f"\nwrote {args.out}")

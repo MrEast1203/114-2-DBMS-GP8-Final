@@ -28,7 +28,7 @@ use std::process::Command;
 use std::str::FromStr;
 use std::time::Instant;
 
-use crate::plan::{NaivePlan, Plan, V1Plan, V2Plan};
+use crate::plan::{NaivePlan, Plan, V1Plan, V2Plan, V3Plan};
 use crate::query::{QuerySpec, QueryType};
 
 #[derive(Args, Debug, Clone)]
@@ -176,6 +176,7 @@ fn make_plan(name: &str) -> Result<Box<dyn Plan + Send + Sync>> {
         "naive" => Box::new(NaivePlan),
         "v1"    => Box::new(V1Plan),
         "v2"    => Box::new(V2Plan),
+        "v3"    => Box::new(V3Plan),
         other   => return Err(anyhow::anyhow!("unknown plan {other}")),
     })
 }

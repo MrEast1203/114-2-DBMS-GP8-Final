@@ -179,8 +179,11 @@ async fn run_seven(dsn: &str, args: SevenArgs) -> Result<()> {
         "naive" => Box::new(plan::NaivePlan),
         "v1"    => Box::new(plan::V1Plan),
         "v2"    => Box::new(plan::V2Plan),
+        "v3"    => Box::new(plan::V3Plan),
         other   => return Err(anyhow::anyhow!("unknown plan: {other}")),
     };
+    tracing::debug!(plan = plan_impl.name(), query = q.as_str(),
+                    samples = args.samples, "seven cell start");
 
     let mut hist = hdrhistogram::Histogram::<u64>::new_with_bounds(1, 600_000_000, 3)?;
     let mut first_count = 0usize;
