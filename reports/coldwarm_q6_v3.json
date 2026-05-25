@@ -1,0 +1,23 @@
+{
+  "schema": "researchdb.phase1.cold_warm.v1",
+  "plan": "v3",
+  "query": "Q6",
+  "cold_method": "container-restart",
+  "warmup": 5,
+  "cold": {
+    "p50_us": 77247,
+    "p95_us": 78783,
+    "p99_us": 78783,
+    "max_us": 78783,
+    "n": 5
+  },
+  "warm": {
+    "p50_us": 42815,
+    "p95_us": 47487,
+    "p99_us": 47487,
+    "max_us": 47487,
+    "n": 5
+  },
+  "cold_over_warm_p50": 1.804204134065164,
+  "cold_over_warm_p95": 1.6590435277023186
+}
