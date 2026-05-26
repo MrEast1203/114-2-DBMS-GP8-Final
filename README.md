@@ -26,32 +26,50 @@ construction, results, and reproduction notes — lives in
 
 Two snapshots — the original baseline (samples=15, naive/v1/v2 from
 `reports/eval_phase1_e4.json`) and a same-run 4-plan comparison
-(samples=10, all four plans measured back-to-back on the same machine,
-see `reports/eval_v3.json`):
+(samples=10, all four plans measured back-to-back on the same machine
+with the **augmented ground truth** described below, see
+`reports/eval_v3.json`):
 
-| plan  | mean P50 (samples=15) | mean P50 (samples=10, same-run) | NDCG@10 | top-10 vs naive |
-| ----- | --------------------- | -------------------------------- | ------- | ---------------- |
-| naive | 51.36 ms              | 36.74 ms                         | 0.675   | — (baseline)     |
-| v1    | 50.92 ms              | 36.17 ms                         | 0.675   | Jaccard 1.000 (same) |
-| v2    | **35.75 ms**          | 24.65 ms                         | **0.801** | Jaccard 0.601 (differs) |
-| v3    | —                     | **18.15 ms**                     | 0.650   | Jaccard 0.664 vs v2 |
+| plan  | mean P50 (samples=15, original GT) | mean P50 (samples=10, augmented GT) | NDCG@10 (samples=10, augmented GT) | top-10 vs naive |
+| ----- | ---------------------------------- | ----------------------------------- | ----------------------------------- | ---------------- |
+| naive | 51.36 ms                           | 35.40 ms                            | 0.827                               | — (baseline)     |
+| v1    | 50.92 ms                           | 35.01 ms                            | 0.827                               | Jaccard 1.000 (same) |
+| v2    | 35.75 ms                           | 23.61 ms                            | **0.925**                           | Jaccard 0.601 (differs) |
+| v3    | —                                  | **16.85 ms**                        | 0.868                               | Jaccard 0.664 vs v2 |
 
-- **v2 push-down** cuts mean latency 1.44× and lifts NDCG@10 by
-  +0.126 by restricting the ranker to the graph-filtered candidate set
-  rather than ranking the whole corpus and filtering afterward.
+- **v2 push-down** cuts mean latency 1.44× over naive (original GT)
+  and lifts NDCG@10 by +0.098 vs naive (augmented GT) by restricting
+  the ranker to the graph-filtered candidate set rather than ranking
+  the whole corpus and filtering afterward.
 - **v3 is v2's further latency optimization** — a *chained* push-down
   for the two-ranker query types Q6 / Q7: take graph subset (BFS), then
   BM25 top-N within that subset, then run vector search restricted to
   the BM25 top-N, and finally RRF the vector and BM25 rankings.
-  **v3 mean P50 = 18.15 ms is 1.36× faster than v2**, mostly from Q6
-  (46 ms → 20 ms, 2.31× — v2 has no graph in Q6 so doesn't push down,
+  **v3 mean P50 = 16.85 ms is 1.40× faster than v2**, mostly from Q6
+  (43.7 ms → 18.6 ms, 2.35× — v2 has no graph in Q6 so doesn't push down,
   v3 pushes BM25 → pgvector instead). Q4 / Q5 delegate to v2 verbatim
-  (NDCG byte-identical). **Tradeoff:** Q6 NDCG drops from 0.618 to
-  0.201 because pgvector now only sees the BM25 top-N — semantic
-  neighbors whose abstracts don't lexically match are excluded.
-  v3 is therefore best for queries with precise keywords; for
-  same-topic semantic retrieval, prefer v2. Full disclaim in
+  (NDCG byte-identical, ΔNDCG = +0.000 × 10). **Tradeoff:** mean NDCG
+  drops 0.057 (v2 0.925 → v3 0.868) — concentrated on Q6-2
+  ("ResNet + batch normalization" misses BN-related papers whose
+  abstracts don't lexically match the term) and Q7-1 / Q7-3. But v3
+  *also wins* NDCG on Q7-2 (+0.095) and Q7-5 (+0.044) — chained
+  push-down isn't a universal loss on NDCG, just a workload-dependent
+  tradeoff. Full per-query breakdown + tradeoff disclaim in
   `reports/v3_summary.md` and `docs/report.html` §4.7 / §8.4 / §11.2.
+- **Ground truth was augmented (2026-05-26)** to keep the evaluation
+  honest. The original pool (1 368 labels) was built from
+  `pgvector top-30 ∪ pg_search top-30` per query — that pool **did not
+  cover v3's chained-pushdown outputs**, which can fall outside the
+  individual engines' top-30 lists. NDCG defaults unlabeled papers to 0,
+  so v3 was getting systematically penalized for retrieving papers
+  nobody had labeled. We unioned all four plans' top-10s, identified
+  83 unlabeled (qid, paper_id) pairs, and labeled them under the same
+  rubric and same single annotator as the original 1 368. Updated
+  GT lives in `eval/ground-truth.jsonl` (1 451 rows now, new rows
+  carry `label_source: "augmented_2026-05-26_v3_pool"`). All plans'
+  NDCG went up after the fix (naive/v1 +0.152, v2 +0.124, v3 +0.218);
+  **v3 was the most under-evaluated under the old pool**. Methodology
+  in `docs/report.html` §6.3.5 and `eval/labels_v3_aug.py`.
 - **Graph is never an RRF ranking signal** in any of the four plans.
   naive uses graph as a post-filter on RRF results; v2 pushes it down
   to the ranker SQL as a pre-filter; v3 inherits v2's choice
@@ -213,14 +231,15 @@ artifacts committed under `reports/`:
 
 | file                              | purpose                                        |
 | --------------------------------- | ---------------------------------------------- |
-| `eval_phase1_e4.json`             | 20 queries × 3 plans (naive/v1/v2) · P50 + NDCG + Jaccard + RBO (baseline, samples=15) |
-| `eval_v3.json`                    | **20 queries × 4 plans (naive/v1/v2/v3)** · same metrics + v3-vs-v2 pairwise · `results` flat list for tooling |
-| `v3_summary.md`                   | **v3 markdown summary** — mean P50 / NDCG / per-query diff vs v2 / honest disclaim of regressions |
+| `eval_phase1_e4.json`             | 20 queries × 3 plans (naive/v1/v2) · P50 + NDCG + Jaccard + RBO (baseline, samples=15, **original GT 1 368 labels**) |
+| `eval_v3.json`                    | **20 queries × 4 plans (naive/v1/v2/v3)** · same metrics + v3-vs-v2 pairwise · `results` flat list for tooling · **augmented GT 1 451 labels** |
+| `v3_summary.md`                   | **v3 markdown summary** — mean P50 / NDCG / per-query diff vs v2 / GT-augmentation methodology / honest disclaim of regressions |
 | `coldwarm_full_21.json`           | 7 queries × 3 plans · cold-vs-warm P50 matrix (baseline) |
 | `coldwarm_v3.json`                | **7 queries × 4 plans · cold-vs-warm P50 matrix** (28 cells, includes v3) |
 | `storage.json`                    | per-relation / per-index disk usage breakdown  |
 | `bfs_shootout.json`               | AGE Cypher vs `WITH RECURSIVE`, 3 depth × 3 bucket |
 | `coldwarm_q{1..7}_{naive,v1,v2,v3}.json` | individual cells of the cold/warm matrix (v3 cells overwrite the prior `naive,v1,v2` per-cell files when re-run via `scripts/coldwarm_all_28.py`) |
+| `eval/labels_v3_aug.py`           | **83 augmented (qid, paper_id) → 0/1 labels** added on 2026-05-26 to make the GT pool cover all four plans' top-10 — see `docs/report.html` §6.3.5 for methodology |
 
 If you just want to inspect the data, read those JSONs directly — no
 need to set up the full pipeline.
