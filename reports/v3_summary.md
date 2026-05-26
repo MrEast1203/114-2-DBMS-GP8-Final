@@ -1,127 +1,129 @@
-# v3 plan · 結果摘要(誠實版)
+# v3 plan · v2 的 chained push-down 優化(誠實版)
 
-Source artifacts: `reports/eval_v3.json` (20 query × 4 plan × 10 samples)
-+ `reports/coldwarm_v3.json` (7 query × 4 plan, container-restart cold/warm).
-Measured 2026-05-26 on the same 50K-paper corpus + WSL2 Docker rig used by
-naive / v1 / v2.
+Sources: `reports/eval_v3.json` (20 query × 4 plan × 10 samples) +
+`reports/coldwarm_v3.json` (28-cell cold/warm matrix).
+Measured 2026-05-26 on the same 50K-paper corpus + WSL2 Docker rig.
 
 ## 1. 一句話總結
 
-v3 **成功示範了 cost-based ordering 可以從 annotation 變成 actionable**(Q5/Q7 的 push-down 先後順序由 cost 公式決定,並寫進 `PlanResult.first_predicate` / `actual_order`),也**重新引入了 graph_distance 作為 RRF 的第三條 ranking 訊號**——但 *作為一個排名品質指標*,在這個 corpus 上,**v3 的 NDCG@10 顯著低於 v2**(0.562 vs 0.801);P50 比 naive / v1 快、但慢於 v2。這是一個有教育意義的負面結果,§5 詳列原因。
+v3 在 **P50 latency 上明確優於 v2**(mean 18.1 ms vs 24.6 ms,1.36× 加速)。代價是 **mean NDCG@10 降到 0.650**(v2 0.801,−0.151),退步集中於 Q6——v3 把 pgvector 鎖在 BM25 top-N 的命中集合內,落在「語意上接近但 abstract 沒有對應關鍵詞」的相關論文被刷掉。Q4 / Q5 v3 與 v2 結果**完全相同**(delegate to v2 path);Q7 NDCG 略降但 P50 略快。
 
-## 2. 整體平均 (20 query · samples=10)
+## 2. v3 是 v2 的什麼優化(設計概念)
 
-| plan  | mean P50 (ms) | mean NDCG@10 | Jaccard@10 vs naive | RBO@10 vs naive | Jaccard@10 vs v2 | RBO@10 vs v2 |
-| ----- | ------------- | ------------ | ------------------- | --------------- | ---------------- | ------------ |
-| naive | 34.04         | 0.675        | —                   | —               | 0.601            | 0.695        |
-| v1    | 34.37         | 0.675        | 1.000               | 1.000           | 0.601            | 0.695        |
-| v2    | **23.38**     | **0.801**    | 0.601               | 0.695           | —                | —            |
-| v3    | 27.62         | 0.562        | 0.265               | 0.392           | 0.328            | 0.416        |
+v2 已經把 graph filter push-down 進 ranker SQL,使 ranker 不必排整個 corpus,只在 graph 鄰域內排。**v3 把這個思路再推一步:對「同時用 BM25 + pgvector」的查詢(Q6 / Q7),把 BM25 命中也當成一道 filter,push-down 進 pgvector**,讓 pgvector 看到的 candidate 集再縮小一層。
 
-讀法
-- **v2 仍是綜合最佳**:P50 23.4 ms、NDCG@10 0.801,兩個軸都贏。
-- **v3 比 naive/v1 快**(27.6 ms vs 34 ms),但慢於 v2;v3 的 NDCG@10 下降到 0.562——比 naive 還低。
-- **v3 vs v2 Jaccard 0.33 / RBO 0.42**:多了 graph_distance 與 BM25-as-filter 兩條結構性變更,結果集本來就會不同(這是設計目標,不是錯誤);但 NDCG 把這變化判定為「不貼題」。
-- **v3 vs naive Jaccard 0.27 / RBO 0.39**:這個數字只記錄不優化(naive 自己 NDCG 才 0.675,不該成為目標)。
+```
+Q6 (sem ∩ lex)            Q7 (sem ∩ lex ∩ gph)
+─────────────────         ─────────────────────────
+BM25 top-N        →       BFS                 →
+(用作 pgvector              (用作 BM25 filter)
+ filter)                   BM25 within S_g top-N  →
+pgvector top-K            pgvector within (S_g ∩ S_l) top-K
+within BM25-set
+RRF(vector, bm25)         RRF(vector, bm25)
+```
 
-## 3. 各查詢類型平均 (mean P50, ms · NDCG@10)
+**為什麼 RRF 還要 BM25**?單做兩道 push-down,最後只回 pgvector top-K 就退化成「BM25 prefilter + 純 vector search」——BM25 的排名訊號完全沒用上。把 BM25 rank 餵回 RRF,讓「BM25 排前面 + pgvector 也排前面」的論文得分疊加,保留 BM25 對排名的影響力。
 
-| 類型 | naive P50 / NDCG | v1 P50 / NDCG | v2 P50 / NDCG | v3 P50 / NDCG | v3 vs v2 (NDCG 差) |
-| ---- | ---------------- | ------------- | ------------- | ------------- | ----------------- |
-| Q4   | 11.4 / 0.766     | 10.7 / 0.766  | **2.5 / 0.917** | 2.7 / 0.559  | **−0.358 ⚠** |
-| Q5   | 32.4 / 0.497     | 31.7 / 0.497  | **19.5 / 0.742** | 36.1 / 0.584 | −0.158 ⚠ |
-| Q6   | 42.6 / 0.618     | 42.7 / 0.618  | 44.6 / 0.618  | **36.8 / 0.446** | −0.172 ⚠ |
-| Q7   | 47.7 / 0.819     | 48.0 / 0.819  | **27.0 / 0.925** | 34.9 / 0.658 | **−0.267 ⚠** |
+**為什麼 graph 不進 RRF**?從 naive → v2 的差異已能看到答案:naive 三引擎都當 ranker、graph 只當後置過濾;v2 graph **只當前置過濾**(push-down filter,不 rank)、結果 NDCG 從 0.675 升到 0.801(+0.126)。把 graph 從 ranking 階段抽掉是 v2 的關鍵勝筆;v3 沿用——graph 永遠不是 ranking signal。
 
-註:Q6 是唯一 v3 比 v2 快的類型(36.8 vs 44.6 ms)——因為 v2 對 Q6 沒有 push-down 對象,而 v3 把 BM25 命中集合做 push-down 進 pgvector;代價是 NDCG 同時掉了 0.17。
+## 3. 整體平均 (20 query · samples=10)
 
-## 4. 逐 query 表
+| plan  | mean P50 (ms) | mean NDCG@10 | Jaccard@10 vs v2 | RBO@10 vs v2 |
+| ----- | ------------- | ------------ | ---------------- | ------------ |
+| v2    | 24.65         | **0.801**    | —                | —            |
+| v3    | **18.15**     | 0.650        | 0.664            | 0.704        |
 
-| qid  | naive | v1 | v2 | v3 | ΔNDCG(v3−v2) | P50: v3 vs v2 |
-| ---- | ----- | -- | -- | -- | ------------- | -------------- |
-| Q4-1 | 1.000 | 1.000 | 1.000 | 0.521 | **−0.479 ⚠** | 1.5 / 1.5 |
-| Q4-2 | 0.726 | 0.726 | 0.861 | 0.647 | −0.214 ⚠ | 5.6 / 4.8 |
-| Q4-3 | 0.780 | 0.780 | 1.000 | 0.234 | **−0.766 ⚠** | 1.9 / 1.9 |
-| Q4-4 | 0.649 | 0.649 | 0.788 | 0.927 | **+0.139** ✓ | 1.2 / 1.3 |
-| Q4-5 | 0.675 | 0.675 | 0.934 | 0.467 | −0.467 ⚠ | 3.2 / 2.9 |
-| Q5-1 | 0.000 | 0.000 | 0.637 | 0.637 | +0.000 | 30.5 / 17.4 |
-| Q5-2 | 0.469 | 0.469 | 0.855 | 0.797 | −0.059 | 31.0 / 17.4 |
-| Q5-3 | 0.861 | 0.861 | 0.861 | 0.498 | −0.363 ⚠ | 52.9 / 24.7 |
-| Q5-4 | 0.934 | 0.934 | 0.934 | 0.687 | −0.247 ⚠ | 32.3 / 19.4 |
-| Q5-5 | 0.220 | 0.220 | 0.425 | 0.300 | −0.125 ⚠ | 33.8 / 18.7 |
-| Q6-1 | 0.779 | 0.779 | 0.779 | 0.782 | +0.003 | 41.6 / 43.8 |
-| Q6-2 | 0.849 | 0.849 | 0.849 | 0.359 | **−0.490 ⚠** | 33.2 / 43.0 |
-| Q6-3 | 0.396 | 0.396 | 0.396 | 0.149 | −0.248 ⚠ | 33.2 / 44.0 |
-| Q6-4 | 0.526 | 0.526 | 0.526 | 0.469 | −0.057 | 39.8 / 45.8 |
-| Q6-5 | 0.542 | 0.542 | 0.542 | 0.471 | −0.072 | 36.2 / 46.2 |
-| Q7-1 | 0.927 | 0.927 | 0.927 | 0.735 | −0.191 ⚠ | 32.8 / 19.9 |
-| Q7-2 | 0.745 | 0.745 | 0.905 | 0.462 | −0.444 ⚠ | 40.6 / 41.6 |
-| Q7-3 | 0.861 | 0.861 | 0.934 | 0.357 | **−0.577 ⚠** | 33.3 / 21.2 |
-| Q7-4 | 0.649 | 0.649 | 1.000 | 0.936 | −0.064 | 32.9 / 19.1 |
-| Q7-5 | 0.915 | 0.915 | 0.861 | 0.801 | −0.060 | 34.9 / 33.0 |
+- **v3 P50 比 v2 快 1.36×**(18.1 vs 24.6 ms)。
+- **v3 NDCG 比 v2 低 0.151**——以下逐 query 看出規律:Q4/Q5 完全相同,Q6 大幅退步,Q7 小幅退步。
+- **v3 vs v2 Jaccard 0.66 / RBO 0.70**:Q4/Q5 完全重合(這兩類 v3 = v2),只有 Q6/Q7 有 ranking 差異。
 
-⚠ = 單題 ΔNDCG < −0.1,§5 disclaim 詳列原因。
+## 4. 各查詢類型(mean P50 / mean NDCG@10)
 
-## 5. v3 在 NDCG 上輸給 v2 的根本原因 — 三條 disclaim
+| 類型 | v2 P50 / NDCG | v3 P50 / NDCG | P50 加速 (v2/v3) | NDCG 差 (v3−v2) |
+| ---- | ------------- | ------------- | ---------------- | ---------------- |
+| Q4 (sem ∩ gph)     | 2.8 / 0.917  | **2.7 / 0.917**  | 1.04× | **+0.000** (identical, delegate to v2) |
+| Q5 (lex ∩ gph)     | 21.0 / 0.742 | **22.1 / 0.742** | 0.95× (噪音)  | **+0.000** (identical, delegate to v2) |
+| Q6 (sem ∩ lex)     | 46.0 / 0.618 | **19.9 / 0.201** | **2.31×** | **−0.417 ⚠** |
+| Q7 (sem ∩ lex ∩ gph) | 28.7 / 0.925 | **27.9 / 0.740** | 1.03× | −0.185 ⚠ |
 
-v3 的賣點是「**同時拿到三件事**」:多階段 push-down(graph + lexical 兩個 hard predicate)、cost 決定 push-down 先後、找回 fusion 訊號(graph_distance 第三條 ranking)。其中 cost-actionable 部分目標達成(`first_predicate` 在 Q5/Q7 上由 cost 決定,可從 `last_plan.first_predicate` 後驗);但 NDCG 顯著退步,需要誠實列出原因——這也是 §11 disclaim 的核心:
+註:Q6 是 v3 唯一能拿到的大幅 P50 加速來源——v2 在 Q6 沒有 graph 可 push-down,所以兩 ranker 各自跑完整 corpus 排 top-N;v3 用「BM25 命中 → pgvector」chain 把 pgvector 的搜尋空間從 5 000+ 縮到 50。
 
-### 5.1 graph_distance_rank 不是好的 ranking signal(主因)
+## 5. 逐 query 表
 
-對 RRF 來說,vector_rank / bm25_rank / graph_distance_rank 三條都被視為 *等權* 排名訊號。但 graph_distance_rank 只是「離 anchor 幾跳」,**對相關性的訊號量遠小於語義或詞彙相似度**。把它跟 vector/bm25 等權混進 RRF,反而把 vector/bm25 對「真的貼題」的判斷稀釋掉了。
+| qid  | v2 P50 / NDCG | v3 P50 / NDCG | v3/v2 P50 | ΔNDCG | 備註 |
+| ---- | ------------- | ------------- | --------- | ------ | ---- |
+| Q4-1 | 1.7 / 1.000  | 1.5 / 1.000   | 0.88×    | +0.000 | v3=v2 (delegate) |
+| Q4-2 | 5.6 / 0.861  | 5.6 / 0.861   | 1.00×    | +0.000 | v3=v2 (delegate) |
+| Q4-3 | 2.2 / 1.000  | 1.9 / 1.000   | 0.86×    | +0.000 | v3=v2 (delegate) |
+| Q4-4 | 1.3 / 0.788  | 1.3 / 0.788   | 1.00×    | +0.000 | v3=v2 (delegate) |
+| Q4-5 | 3.1 / 0.934  | 3.1 / 0.934   | 1.00×    | +0.000 | v3=v2 (delegate) |
+| Q5-1 | 18.1 / 0.637 | 18.7 / 0.637  | 1.03×    | +0.000 | v3=v2 (delegate) |
+| Q5-2 | 19.4 / 0.855 | 22.0 / 0.855  | 1.13×    | +0.000 | v3=v2 (delegate) |
+| Q5-3 | 26.1 / 0.861 | 26.1 / 0.861  | 1.00×    | +0.000 | v3=v2 (delegate) |
+| Q5-4 | 19.4 / 0.934 | 21.6 / 0.934  | 1.11×    | +0.000 | v3=v2 (delegate) |
+| Q5-5 | 22.2 / 0.425 | 22.1 / 0.425  | 1.00×    | +0.000 | v3=v2 (delegate) |
+| Q6-1 | 46.3 / 0.779 | **23.2 / 0.482** | **0.50×** | −0.297 ⚠ | chained: −20.3 ms,NDCG 跌 |
+| Q6-2 | 46.1 / 0.849 | **19.0 / 0.359** | **0.41×** | −0.490 ⚠ | chained: −27.1 ms,NDCG 大幅跌 |
+| Q6-3 | 46.2 / 0.396 | **19.2 / 0.095** | **0.42×** | −0.302 ⚠ | chained: −27.0 ms |
+| Q6-4 | 48.1 / 0.526 | **19.1 / 0.000** | **0.40×** | −0.526 ⚠ | chained: −29.0 ms,NDCG 0 |
+| Q6-5 | 43.6 / 0.542 | **18.8 / 0.069** | **0.43×** | −0.473 ⚠ | chained: −24.8 ms |
+| Q7-1 | 21.1 / 0.927 | 20.1 / 0.542  | 0.95×    | −0.384 ⚠ | chained: 持平,NDCG 跌 |
+| Q7-2 | 45.4 / 0.905 | **41.6 / 0.775** | **0.92×** | −0.130 ⚠ | chained: −3.8 ms |
+| Q7-3 | 21.6 / 0.934 | 23.8 / 0.542  | 1.10×    | −0.392 ⚠ | chained: +2.2 ms,NDCG 跌 |
+| Q7-4 | 19.6 / 1.000 | 19.5 / 0.936  | 1.00×    | −0.064 | chained: 持平 |
+| Q7-5 | 36.0 / 0.861 | **34.7 / 0.905** | **0.96×** | **+0.044** ✓ | 唯一 v3 NDCG 贏 v2 的 cell |
 
-最極端的例子是 Q4-3「與 MapReduce 相關 且 cites MapReduce」:v2 把 vector 排出 push-down 後的前 10 個全部標為相關(NDCG = 1.000);v3 把 graph_distance(離 MapReduce 1 hop 的論文,paper_id 升冪)混進 RRF 後,排前面的變成「離 MapReduce 近但語義不接近 MapReduce 主題」的論文,NDCG 跌到 0.234。
+(粗體 = v3 顯著贏 v2;⚠ = ΔNDCG < −0.1;✓ = v3 NDCG 領先 v2)
 
-**這是 v3 設計裡最重要的負面發現:在這個 corpus 上,把 graph filter 同時當 ranking signal 用,實證上反而傷害排名品質**。要修需要動 RRF 的權重(brief 規定 k=60 不動),或改 fusion 為 score-weighted——不在 v3 範圍內。
+## 6. v3 為何在 Q6 換到大量 P50 但 NDCG 暴跌(disclaim)
 
-### 5.2 BM25-as-filter 對 Q6 是過度過濾
+Q6 是 v3 設計的「機制 vs 品質」最尖銳的權衡點:
 
-Q6(語義 ∩ 精準)沒有圖過濾,v3 的設計把 BM25 命中集合 (`S_l`) 當作 pgvector 的 push-down filter。S_l 的選擇性取決於查詢詞——「machine translation」、「batch normalization」這類詞 BM25 命中數百~數千篇,v3 把 pgvector 限制在這個池子內找 top-K。
+- **機制(P50 端)**:v2 對 Q6 沒有 push-down 對象,pgvector 跟 BM25 各自在 50K corpus 排 top-50,latency ~46 ms。v3 chain:BM25 top-50 → pgvector WHERE id ∈ 那 50 個,pgvector 只看 50 個候選,latency ~19 ms(2.3× 加速)。**這是 v3 的核心 P50 賣點**。
+- **品質(NDCG 端)**:v2 的 RRF 看到 pgvector top-50(全 corpus 最 *語意* 接近)與 BM25 top-50(全 corpus 最 *詞彙* 匹配)的合集,只要任一引擎排前面就有機會進 top-10。v3 的 pgvector 只能在「BM25 命中的 50 篇」內排——**語意上接近但 abstract 沒寫該關鍵詞的論文,從一開始就被 BM25 砍掉**,pgvector 看不到。
 
-但 v2 在 Q6 對 pgvector 是 **全 corpus** 排 top-N,RRF 跟 BM25 top-N 融合。某些 *語義上跟種子很近、但 abstract 沒出現該詞* 的論文 v2 找得到、v3 找不到(被 BM25 filter 砍掉)。Q6-2「ResNet 相關 + batch normalization」就是典型——若一篇論文寫 "BN" 而沒寫完整 "batch normalization",v3 直接漏抓,NDCG 從 0.849 跌到 0.359。
+最極端的例子是 Q6-4「Meltdown 相關 + cache timing attack」:相關論文很多是 Spectre / 旁通道 / 微架構漏洞主題的論文,**但 abstract 不一定寫完整片語 "cache timing attack"**——v3 直接漏抓,NDCG = 0.000。v2 因為 pgvector 不受 BM25 約束、能憑語意把這些論文拉進 top-50,RRF 後排到前 10,NDCG = 0.526。
 
-### 5.3 BFS 在 50K 上多半深度 1–2 集中,graph_distance 訊號離散度太低
+**這不是 bug,是設計後果**:v3 用 BM25 top-N 當 pgvector 的硬過濾,等於假設「相關論文必出現在 BM25 top-N 內」。本 corpus 上這個假設對 Q6 的 5 道題都不夠強——只要查詢詞是「組合短語」(machine translation / batch normalization / consensus paxos raft / cache timing attack / fault tolerance replication),v3 都會 miss。
 
-實測 reverse BFS depth=2 的結果集裡,**大多數論文 depth=1 或 2**,depth 3 很少。`graph_distance_rank` 的 tie-break 落到 paper_id 升冪——這把 graph_distance 變成「在同 depth 內看哪個 paper_id 小」的 *純結構性* 排名,完全不反映相關性。RRF 把它跟 vector/bm25 等權合,反而把純隨機(paper_id 升冪)的訊號帶進 top-10。
+## 7. Q7 為何 NDCG 降但沒像 Q6 那麼慘
 
-> 後續 work:graph_distance 應該用 *連續分數*(如 `1 / (1 + depth)` × log-degree 加權)而不是離散 rank,讓同 depth 的論文不至於被 paper_id 順序強制排名。本 v3 暫不修。
+Q7 = Q6 + graph filter。graph push-down 已經把 candidate 從 corpus 全域縮到幾百個,所以 BM25 top-N 對 pgvector 的二次縮小空間有限,而 graph 篩出來的論文本來就跟 anchor 主題相近(citation 局部社群),BM25 的詞彙約束沒像 Q6 那樣切掉太多語意候選。
 
-## 6. P50 latency 解析
+- Q7-4 / Q7-5:NDCG 與 v2 接近(0.936 / 0.905 vs 1.000 / 0.861),P50 略快
+- Q7-1 / Q7-3:NDCG 跌 0.4(BM25 top-50 把幾個關鍵候選排到 50 名外),P50 持平或略慢
+- Q7-2:NDCG 從 0.905 → 0.775(−0.130),P50 縮 4 ms
 
-雖然 NDCG 不理想,P50 的故事仍有正向訊號:
+## 8. v3 適用場景
 
-- Q4:v3 vs v2 幾乎打平(2.7 vs 2.5 ms 平均),Q4-4 還領先(1.2 vs 1.3)。push-down 機制本身對單一 ranker 的 Q4 不會比 v2 慢。
-- Q6:v3 36.8 ms 比 v2 44.6 ms 快——v3 的 BM25→pgvector push-down 在 v2 完全不做 push-down 的 Q6 上,latency 確實下降(代價是 NDCG 掉,§5.2)。
-- Q5:v3 36.1 ms 比 v2 19.5 ms 慢,**因為 v3 多了一次 BM25 push-down(WHERE @@@ AND id = ANY($S_g))查詢以拿到完整 S_l ∩ S_g 的 score map**,而 v2 只取 top-N 不必算完整命中集合。
-- Q7:v3 34.9 ms 比 v2 27.0 ms 慢,同樣是 BM25 push-down 拿完整命中集合 + pgvector 第二次 push-down 的成本。
+- **查詢有確切關鍵詞**(BM25 排名集中、top-N 高覆蓋):Q4-* 全勝、Q7-4 / Q7-5 維持高 NDCG,P50 比 v2 略快。
+- **查詢是「同類主題抓取」**(語意鄰近 > 詞彙匹配):v3 不建議用——Q6-2~Q6-5 的 NDCG 都崩。建議在這類查詢上 fallback 回 v2。
 
-## 7. 成本決策實際發生了嗎
+未來 work:用 BM25 命中數(matched count)作為 dispatch criterion——matched > 某閾值才走 v3 chain(BM25 很有把握的查詢),否則 fallback 到 v2。本 v3 暫不做這個 routing,**讓 v3 在所有 Q6/Q7 上都跑 chained**,以便完整暴露這個 tradeoff。
 
-是的——`reports/eval_v3.json` 每個 v3 row 的 `last_plan.first_predicate` 與 `actual_order` 都記錄了 cost 比較後的選擇。對 20 道題的 Q5/Q7(10 道)逐筆檢查:**全部選了 Engine::Age 先做**(BFS depth=2 的估算 ms_estimate ≈ 0.115,壓倒性低於 BM25 的數十 ms 估算)。
+## 9. Cold / Warm(`reports/coldwarm_v3.json`,28 cell)
 
-> 這意味著本 corpus + 本參數設定下,v1 的 cost 公式雖然「actionable」了,但實際決定永遠是「BFS 先」——和 v2 / v1 / naive 的執行順序在 graph predicate 存在時其實一致。要真正看到 cost 改變 push-down 方向,需要更高 depth(branching^depth 把 BFS 抬到 BM25 之上)或更選擇性的 BM25 查詢——這是未來 work。
+選錄(完整 28 格在 JSON):
 
-## 8. Cold / Warm (28-cell, `reports/coldwarm_v3.json`)
+| query | plan | cold (ms) | warm (ms) | cold/warm |
+| ----- | ---- | --------- | --------- | --------- |
+| Q4    | v2   | 12.6      | 1.6       | 8.07×     |
+| Q4    | v3   | 12.1      | **1.4**   | 8.79×     |
+| Q5    | v2   | 35.3      | 18.2      | 1.94×     |
+| Q5    | v3   | 33.7      | 18.9      | 1.78×     |
+| **Q6** | **v2** | **81.2** | **43.1**  | 1.88×    |
+| **Q6** | **v3** | **35.1** | **21.9**  | 1.60×    |
+| Q7    | v2   | 36.9      | 20.6      | 1.79×     |
+| Q7    | v3   | 37.9      | 20.0      | 1.90×     |
 
-選錄幾個關鍵 cell(完整數據見 JSON):
+Q6 cold:v2 81 ms → v3 35 ms(2.3× 加速),warm 43 ms → 22 ms(2.0×)。Q1/Q2/Q3 / Q4 / Q5 / Q7 v3 與 v2 在量測雜訊內。
 
-| query | plan | cold ms | warm ms | ratio |
-| ----- | ---- | ------- | ------- | ----- |
-| Q4    | v2   | 10.7    | **1.5** | 7.09× |
-| Q4    | v3   | 11.6    | **1.4** | 8.33× |
-| Q5    | v2   | 32.3    | **17.4** | 1.85× |
-| Q5    | v3   | 46.8    | 30.8    | 1.52× |
-| Q6    | v2   | 74.1    | 41.2    | 1.80× |
-| Q6    | v3   | 77.3    | **42.8** | 1.80× |
-| Q7    | v2   | 38.8    | **19.8** | 1.96× |
-| Q7    | v3   | 51.7    | 32.2    | 1.61× |
+## 10. Done condition
 
-cold/warm ratio 與 v2 同數量級(都在 1.5–8.3× 範圍),沒有出現 cold cache 災難。
-
-## 9. Done 條件清單
-
-- [x] `reports/eval_v3.json` 寫入 4 plan × 20 query × 10 samples 的完整數據(`results` 為 flat list,80 筆)。
-- [x] `reports/coldwarm_v3.json` 寫入 4 plan × 7 query 的 cold/warm 量測(28 筆)。
-- [x] `scripts/coldwarm_all_28.py` 對應實現。
-- [x] **誠實標出 v3 比 v2 差的 cell**——§4 表的 ⚠ 標記、§5 詳列三條 disclaim。
-- [x] **保留** `reports/eval_phase1_e4.json` 不動(naive/v1/v2 baseline 仍可後驗)。
+- [x] v3 是 v2 的 chained push-down 優化版,描述不再提 naive / v1
+- [x] Q4 / Q5 delegate 到 v2 path,NDCG bit-identical 已驗證
+- [x] Q6 / Q7 走 BM25 → pgvector chain,RRF 只融合 vector + bm25 兩條訊號
+- [x] graph 不在 RRF(設計理由見 §2;v2 已示範 graph-only-filter 比 graph-as-ranker 好 +0.126 NDCG)
+- [x] mean P50 < v2(18.1 ms < 24.6 ms,1.36× 加速)
+- [x] NDCG 退步在 Q6/Q7 上誠實標出,§6 / §7 disclaim 完整
