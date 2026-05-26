@@ -118,14 +118,84 @@ def main():
     ap.add_argument("--k", type=int, default=10)
     args = ap.parse_args()
 
-    # Load queries + ground-truth (per-query relevance dict).
-    queries = [json.loads(l) for l in args.queries.read_text().splitlines() if l.strip()]
+    # Load queries + ground-truth.
+    #
+    # Each GT row now carries three independent labels (see
+    # eval/augment_gt_per_aspect.py for how they're populated):
+    #   * label_sem (int 0/1)            — human topical judgment vs the
+    #                                       seed_chunk
+    #   * label_lex (int 0/1 or None)    — operational: does BM25 match
+    #                                       the abstract for the query's
+    #                                       bm25_text? None when the
+    #                                       query has no lex predicate
+    #                                       (Q1 / Q3 / Q4).
+    #   * label_gph (int 0/1 or None)    — operational: is the paper in
+    #                                       reverse-BFS(anchor, depth)?
+    #                                       None when the query has no
+    #                                       graph predicate (Q1 / Q2 / Q6).
+    #
+    # For every (qid, paper_id), the *effective relevance* the scoring
+    # code uses is the AND of the predicate labels actually demanded by
+    # that query type:
+    #
+    #   Q1 sem      → label_sem
+    #   Q2 lex      → label_lex
+    #   Q3 gph      → label_gph
+    #   Q4 sem ∩ gph→ label_sem ∧ label_gph
+    #   Q5 lex ∩ gph→ label_lex ∧ label_gph
+    #   Q6 sem ∩ lex→ label_sem ∧ label_lex
+    #   Q7 all three→ label_sem ∧ label_lex ∧ label_gph
+    #
+    # This decoupling exists so that papers can't be credited for a
+    # predicate they don't actually satisfy (e.g. a paper semantically
+    # about ResNet whose abstract doesn't contain "batch normalization"
+    # should NOT count as relevant for Q6, even if the human marked it
+    # topically related).
+    queries_list = [json.loads(l) for l in args.queries.read_text().splitlines() if l.strip()]
+    queries_by_qid = {q["qid"]: q for q in queries_list}
+
+    # Predicates each query type composes.
+    QTYPE_PREDICATES = {
+        "Q1": ("sem",),
+        "Q2": ("lex",),
+        "Q3": ("gph",),
+        "Q4": ("sem", "gph"),
+        "Q5": ("lex", "gph"),
+        "Q6": ("sem", "lex"),
+        "Q7": ("sem", "lex", "gph"),
+    }
+
+    # rel[qid][paper_id] = effective binary label (after AND of predicates).
     rel: dict[str, dict[int, int]] = defaultdict(dict)
+    per_aspect: dict[str, dict[int, dict[str, int | None]]] = defaultdict(dict)
     for l in args.gt.read_text().splitlines():
         if not l.strip(): continue
         r = json.loads(l)
-        if r.get("label") is None: continue
-        rel[r["qid"]][r["paper_id"]] = int(r["label"])
+        qid = r["qid"]
+        pid = r["paper_id"]
+        # Backwards compat: if the GT row predates the augmentation,
+        # treat `label` as label_sem and the operational labels as None.
+        lab_sem = r.get("label_sem", r.get("label"))
+        lab_lex = r.get("label_lex")
+        lab_gph = r.get("label_gph")
+        per_aspect[qid][pid] = {
+            "sem": lab_sem, "lex": lab_lex, "gph": lab_gph,
+        }
+        # Compute effective relevance for this qid.
+        qtype = queries_by_qid.get(qid, {}).get("type", r.get("qtype"))
+        preds = QTYPE_PREDICATES.get(qtype, ())
+        aspect_vals = []
+        for p in preds:
+            v = {"sem": lab_sem, "lex": lab_lex, "gph": lab_gph}[p]
+            if v is None:
+                # Predicate label missing — fall through to skip this row.
+                aspect_vals = None
+                break
+            aspect_vals.append(int(v))
+        if aspect_vals is None:
+            continue
+        rel[qid][pid] = 1 if all(a == 1 for a in aspect_vals) else 0
+    queries = queries_list
 
     PLANS = ("naive", "v1", "v2", "v3")
 
