@@ -8,11 +8,13 @@ A research-grade benchmark of **four plans** for running
 The corpus is 36 740 OpenAlex paper abstracts; the three engines are
 `pgvector` (HNSW), `pg_search` (BM25, ParadeDB), and PostgreSQL's native
 `WITH RECURSIVE` over the citation graph. A Rust orchestrator on top of
-the database fuses the three engines with Reciprocal Rank Fusion and
+the database fuses the engines with Reciprocal Rank Fusion and
 implements increasingly sophisticated plans
 (`naive` → `v1` → `v2` → `v3`) that progress from textbook fixed-order,
-to cost-aware reorder, to **graph filter push-down into the ranker SQL**,
-to **multi-stage push-down + cost-driven ordering + three-way fusion**.
+to cost-aware reorder, to **graph filter push-down into the ranker SQL**
+(v2), and finally to **chained push-down: BM25 top-N → pgvector** (v3),
+which is v2's further latency optimization for the two-ranker query
+types Q6 / Q7.
 
 The full write-up — motivation, schema, four plans, ground-truth
 construction, results, and reproduction notes — lives in
@@ -23,31 +25,39 @@ construction, results, and reproduction notes — lives in
 ## TL;DR results (50K papers, WSL2, warm cache)
 
 Two snapshots — the original baseline (samples=15, naive/v1/v2 from
-`reports/eval_phase1_e4.json`) and a same-run v3 comparison (samples=10,
-all four plans measured back-to-back on the same machine, see
-`reports/eval_v3.json`):
+`reports/eval_phase1_e4.json`) and a same-run 4-plan comparison
+(samples=10, all four plans measured back-to-back on the same machine,
+see `reports/eval_v3.json`):
 
-| plan  | mean P50 | NDCG@10 | top-10 vs naive       |
-| ----- | -------- | ------- | --------------------- |
-| naive | 51.36 ms | 0.675   | — (baseline)          |
-| v1    | 50.92 ms | 0.675   | Jaccard 1.000 (same)  |
-| v2    | **35.75 ms** | **0.801** | Jaccard 0.601 (differs) |
-| v3    | 27.62 ms (same-run baseline 23.38) | 0.562 ⚠ | Jaccard 0.265 vs naive · 0.328 vs v2 |
+| plan  | mean P50 (samples=15) | mean P50 (samples=10, same-run) | NDCG@10 | top-10 vs naive |
+| ----- | --------------------- | -------------------------------- | ------- | ---------------- |
+| naive | 51.36 ms              | 36.74 ms                         | 0.675   | — (baseline)     |
+| v1    | 50.92 ms              | 36.17 ms                         | 0.675   | Jaccard 1.000 (same) |
+| v2    | **35.75 ms**          | 24.65 ms                         | **0.801** | Jaccard 0.601 (differs) |
+| v3    | —                     | **18.15 ms**                     | 0.650   | Jaccard 0.664 vs v2 |
 
 - **v2 push-down** cuts mean latency 1.44× and lifts NDCG@10 by
   +0.126 by restricting the ranker to the graph-filtered candidate set
   rather than ranking the whole corpus and filtering afterward.
-- **v3 multi-stage push-down + cost ordering + three-way fusion**:
-  P50 beats naive/v1 (1.23× vs naive) and beats v2 on Q6 (1.21×) and
-  Q4 (1.35×), but loses on Q5/Q7. ⚠ **NDCG drops to 0.562** — lower
-  than v2's 0.801 and even lower than naive's 0.675. Root cause: the
-  third ranking signal (`graph_distance` = BFS depth) added to RRF is
-  weak relative to vector/BM25 and, at equal RRF weight (k=60, unchanged
-  per spec), dilutes the two stronger signals. v3 is preserved as the
-  honest "negative result" — the cost-actionable + multi-stage push-down
-  *mechanism* works, but on this corpus the fusion-signal recovery
-  hurts ranking quality. See `reports/v3_summary.md` and
-  `docs/report.html` §4.7 / §8.4 / §11.2 for the full disclaim.
+- **v3 is v2's further latency optimization** — a *chained* push-down
+  for the two-ranker query types Q6 / Q7: take graph subset (BFS), then
+  BM25 top-N within that subset, then run vector search restricted to
+  the BM25 top-N, and finally RRF the vector and BM25 rankings.
+  **v3 mean P50 = 18.15 ms is 1.36× faster than v2**, mostly from Q6
+  (46 ms → 20 ms, 2.31× — v2 has no graph in Q6 so doesn't push down,
+  v3 pushes BM25 → pgvector instead). Q4 / Q5 delegate to v2 verbatim
+  (NDCG byte-identical). **Tradeoff:** Q6 NDCG drops from 0.618 to
+  0.201 because pgvector now only sees the BM25 top-N — semantic
+  neighbors whose abstracts don't lexically match are excluded.
+  v3 is therefore best for queries with precise keywords; for
+  same-topic semantic retrieval, prefer v2. Full disclaim in
+  `reports/v3_summary.md` and `docs/report.html` §4.7 / §8.4 / §11.2.
+- **Graph is never an RRF ranking signal** in any of the four plans.
+  naive uses graph as a post-filter on RRF results; v2 pushes it down
+  to the ranker SQL as a pre-filter; v3 inherits v2's choice
+  (graph push-down for Q4 / Q5 / Q7, no graph in Q6). The
+  naive → v2 comparison shows graph-as-filter beats graph-as-ranker by
+  +0.126 NDCG, so v3 doesn't try to revisit that question.
 - `naive` and `v1` return **bit-identical top-10s** on every query.
   Cost-based reorder by itself does *not* change latency or quality in
   this pipeline — every engine must run to completion regardless of
@@ -122,10 +132,9 @@ key trick that makes v2 faster *and* more precise.
 | -------------------------------------------------------------------------- | ----- | -- | -- | -- |
 | RRF fusion across engines (k=60)                                           |  ✓   | ✓ | ✓ | ✓ |
 | reorder engines by selectivity (cost-aware annotation)                     |       | ✓ | ✓ | ✓ |
-| push graph filter down into ranker SQL (single-stage)                      |       |    | ✓ | ✓ |
-| **multi-stage push-down (graph + lexical, Q5 / Q7)**                       |       |    |    | ✓ |
-| **cost decides push-down ordering (actionable, not just annotation)**      |       |    |    | ✓ |
-| **three-way fusion (vector + BM25 + graph_distance) on narrowed candidate**|       |    |    | ✓ |
+| push graph filter down into ranker SQL (Q4 / Q5 / Q7)                      |       |    | ✓ | ✓ |
+| **chained push-down: BM25 top-N → pgvector (Q6 / Q7)**                     |       |    |    | ✓ |
+| graph in RRF as a ranking signal                                           |  (post-filter, not RRF input) |  (post-filter) |  (filter only) |  (filter only) |
 
 The cost-based reorder in v1 does *not* change latency or quality in
 this pipeline (see TL;DR): every engine has to run to completion for
@@ -133,31 +142,52 @@ RRF, and the engines have no data dependency that reorder could
 short-circuit. v1 is kept as the clean ablation that shows this; v2's
 push-down is what actually moves the needle.
 
-v3 attempts to claim **three things simultaneously**: (a) extend v2's
-single-stage push-down to multi-stage (so when *both* graph and lexical
-are hard predicates — Q5 + Q7 — the cost formula finally has somewhere
-to act, i.e. *which* hard predicate to materialize first); (b) re-score
-the graph filter as a `graph_distance` ranking signal and feed it
-back into RRF as a third input alongside vector / BM25, recovering the
-three-way fusion that naive had; (c) keep RRF's k=60 unchanged. **All
-three mechanisms work, but on this corpus the equal-weight RRF
-dilutes vector / BM25 with the weaker graph_distance signal — v3's mean
-NDCG@10 drops to 0.562**. v3 is preserved as the honest negative
-result: push-down is a pure win, but turning a hard predicate into a
-ranking signal at equal weight is *not*. See `docs/report.html` §4.7
-and `reports/v3_summary.md` for the full causal chain.
+**v3 is v2's chained-push-down optimization** for the two-ranker
+query types (Q6 = semantic ∩ lexical, Q7 = semantic ∩ lexical ∩ graph).
+The idea is to keep pushing the *current* result set into the *next*
+engine's SQL so that pgvector — the most expensive ranker per scanned
+row — sees the smallest possible candidate pool:
+
+```
+v3 Q6:           BM25 top-50  →  pgvector WHERE id ∈ BM25_top50 LIMIT 50
+                                 →  RRF(vector_rank, bm25_rank)
+
+v3 Q7:  BFS S_g  →  BM25 WHERE id ∈ S_g LIMIT 50
+                 →  pgvector WHERE id ∈ (S_g ∩ BM25_top50) LIMIT 50
+                 →  RRF(vector_rank, bm25_rank)
+```
+
+Q4 (semantic ∩ graph) and Q5 (lexical ∩ graph) only have one ranker
+downstream of the graph filter, so there's no chain to build — v3
+delegates them to v2's `multi_predicate_pushdown` verbatim and the
+top-10 is byte-identical to v2's.
+
+If v3 stopped after the final pgvector top-K it would just be a
+pre-filtered HNSW vector search and BM25 would only act as a binary
+filter, not a ranker. To keep BM25 influencing the final order, v3
+feeds both engines' rankings into RRF (k=60 unchanged), so a paper
+that ranks well in **both** vector and BM25 still wins.
+
+**Why graph is not an RRF ranking signal:** naive (graph as a post-filter
+on RRF) versus v2 (graph as a pre-filter pushed into ranker SQL) already
+answered this — moving graph out of the ranking stage lifted NDCG@10
+from 0.675 to 0.801. v3 sticks with v2's choice; graph is filter-only,
+never an RRF input.
+
+**v3 tradeoff** (full disclaim in `reports/v3_summary.md` and
+`docs/report.html` §4.7 / §11.2): v3 mean P50 is 1.36× faster than v2
+(18.15 ms vs 24.65 ms, mostly Q6 → 2.31× speedup), but mean NDCG@10
+drops to 0.650 — concentrated on Q6, where the BM25 top-50 filter
+excludes semantic neighbors whose abstracts don't lexically match
+("machine translation", "batch normalization", "cache timing attack"
+all hit this). v3 fits **precise-keyword** queries; for "same-topic"
+semantic retrieval, prefer v2.
 
 The BFS cost formula `branching^depth` is used by v1 only for
 annotation — it's the empirical fit from `bench micro-bench-age` (see
 `bench/src/microbench.rs`). v2's push-down decision is triggered by
 query type (Q4 / Q5 / Q7), not by reading cost at runtime, so the
-cost formula is not listed as a v2 capability. **v3 is the first plan
-where the BFS cost formula is *actionable*** (it decides the
-push-down order between graph and lexical in Q5 / Q7); however, on
-this corpus + depth=2 the BFS estimate is always cheaper, so all 10
-Q5/Q7 cells end up picking BFS first — the mechanism is in place but
-the cost decision happens to be the same as v2's hard-coded
-graph-first ordering.
+cost formula is not listed as a v2 / v3 capability either.
 
 ### The seven query types
 
