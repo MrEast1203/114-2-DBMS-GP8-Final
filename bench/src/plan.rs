@@ -16,9 +16,8 @@ use sqlx::Row;
 
 use crate::cost::{self, Engine, EngineNorm, PredicateEstimate};
 use crate::fusion::{fuse, FusionStrategy, Ranking};
-use crate::graph_engine::{bfs_recursive_sql, bfs_recursive_sql_with_depth, Direction};
+use crate::graph_engine::{bfs_recursive_sql, Direction};
 use crate::query::{QuerySpec, QueryType};
-use std::collections::HashMap;
 
 /// How wide to fetch per-engine candidates before fusion. Setting this
 /// to k itself is too narrow — Q7 intersected with three engines could
@@ -161,84 +160,67 @@ impl Plan for V1Plan {
     }
 }
 
-// ============ V3 ORCHESTRATOR (multi-stage push-down + cost-driven order + fusion-signal recovery) ============
+// ============ V3 ORCHESTRATOR (chained push-down: v2 optimization) ============
 
-/// **v3** — "one-shot" plan that simultaneously claims three things:
+/// **v3** — v2 의 進一步效能優化。
 ///
-/// 1. *Multi-stage push-down*: when **two** hard predicates are present
-///    (Q5 = graph + lexical; Q7 = graph + lexical + vector), v3 pushes
-///    the first hard predicate's filter into the second's SQL — not
-///    just into the ranker as v2 does, but ranker-to-ranker, narrowing
-///    the candidate set in two successive stages.
-/// 2. *Cost-driven ordering*: v1's BFS / BM25 cost formulas finally
-///    decide something — namely, **which hard predicate to materialize
-///    first**. Reuse `cost::age_cost_v1(branching^depth)` from
-///    `microbench` and `cost::pg_search_cost(matched, avg_posting)`;
-///    no new fits. Tie-break by lower selectivity, then prefer BFS.
-/// 3. *Fusion-signal recovery*: v2 turns the graph filter into a hard
-///    AND, losing it as a ranking signal. v3 keeps using it as a hard
-///    filter (push-down) **and** re-uses it as a `graph_distance` rank
-///    (sort by BFS depth ASC) on the already-narrowed candidate set —
-///    re-scored together with `vector_rank` and `bm25_rank` into RRF.
-///    Q7 therefore fuses three signals exactly like naive did, but on
-///    a candidate set the size of `S_g ∩ S_l` instead of the full
-///    corpus.
+/// v2 已經把 graph filter push-down 進 ranker SQL,使 ranker 只在圖過
+/// 濾後的 candidate 上排名,P50 / NDCG 兩個軸同時得益(§4.5)。v3 把這
+/// 個 push-down 思路再推一步:**對「兩個 ranker 都要用」的查詢(Q6 / Q7),
+/// 把 BM25 命中也當成一道 filter,再 push-down 進 pgvector**,讓 pgvector
+/// 看到的 candidate 集合再縮小一層。
 ///
-/// On single-predicate queries (Q1 / Q2 / Q3) v3 collapses to the same
-/// helper that v2 / v1 / naive use — `V2Plan::should_use_pushdown(q)`
-/// returns false so v3 doesn't enter its multi-stage branch.
+/// Pipeline:
+///
+/// ```text
+///   Q6 (semantic ∩ lexical):
+///     S_l = BM25 ORDER BY score LIMIT N        ← top-N BM25 hits
+///     vector_top = pgvector WHERE id ∈ S_l LIMIT K
+///     return RRF([vector_top, S_l])           ← vector + bm25 fed to RRF
+///
+///   Q7 (semantic ∩ lexical ∩ graph):
+///     S_g = BFS(anchor, depth)                 ← graph subset
+///     S_l ∩ S_g = BM25 WHERE id ∈ S_g LIMIT N  ← BM25 subset *within* S_g
+///     vector_top = pgvector WHERE id ∈ (S_l ∩ S_g) LIMIT K
+///     return RRF([vector_top, S_l ∩ S_g])     ← vector + bm25 fed to RRF
+/// ```
+///
+/// Q4 / Q5 only have one ranker after the graph push-down, so v3 has no
+/// room to chain a second filter — it delegates verbatim to v2's
+/// `multi_predicate_pushdown`. Q1 / Q2 / Q3 are single-engine and also
+/// delegate to the same helpers v2 uses (`semantic_only` /
+/// `lexical_only` / `graph_only`).
+///
+/// ### Why feed BM25 into RRF instead of returning vector top-K alone
+///
+/// If we stopped after pgvector's filtered search, v3 would be a plain
+/// *pre-filter HNSW vector search* — the BM25 signal would only act as
+/// a hard filter, contributing nothing to the ranking. To keep BM25
+/// influencing the final order (so the result reflects "semantically
+/// closest **among** lexically relevant" rather than "semantically
+/// closest, period, filtered by lexical match"), v3 feeds the BM25
+/// rank back into RRF as the second signal.
+///
+/// ### Why graph is *not* in RRF
+///
+/// The naive → v2 comparison already showed that treating graph as a
+/// ranking signal hurts: naive runs all three engines as rankers and
+/// post-filters by graph (NDCG@10 = 0.675); v2 uses graph **only as a
+/// filter** (push-down, not a ranker) and lifts NDCG@10 to 0.801
+/// (+0.126). On this corpus, graph-as-filter beats graph-as-ranker.
+/// v3 inherits that conclusion — `graph_distance` is *not* fed into
+/// RRF; graph stays a pure filter.
 pub struct V3Plan;
 
 impl V3Plan {
-    /// `(branching^depth) × age_ms_unit` — reuse cost.rs constants.
-    pub fn cost_bfs_ms(depth: u32) -> f64 {
-        let raw = cost::age_cost_v1(depth, 2.4);
-        cost::normalize(raw, Engine::Age, &EngineNorm::default())
-    }
-    /// `matched × avg_posting × pg_search_ms_unit` — reuse cost.rs constants.
-    pub fn cost_bm25_ms(matched: usize) -> f64 {
-        let raw = cost::pg_search_cost(matched, 50.0);
-        cost::normalize(raw, Engine::PgSearch, &EngineNorm::default())
-    }
-
-    /// Pure cost decision: which hard predicate (BFS vs BM25) should
-    /// v3 materialize first? Lower cost wins; tie → lower selectivity;
-    /// final tie → BFS first (graph push-down on the ranker side is
-    /// usually cheaper to wire than the reverse).
-    pub fn pick_first_hard_predicate(
-        cost_bfs_ms: f64,
-        cost_bm25_ms: f64,
-        sel_bfs: f64,
-        sel_bm25: f64,
-    ) -> Engine {
-        if cost_bfs_ms < cost_bm25_ms {
-            Engine::Age
-        } else if cost_bm25_ms < cost_bfs_ms {
-            Engine::PgSearch
-        } else if sel_bfs <= sel_bm25 {
-            Engine::Age
-        } else {
-            Engine::PgSearch
-        }
-    }
-
-    /// Build the `graph_distance_rank` from a depth map restricted to
-    /// the surviving candidate set. Papers not in the BFS neighborhood
-    /// are *dropped* (sentinel = "not in this ranking"), rather than
-    /// appended at the tail — keeps RRF semantics clean (a paper
-    /// outside `S_g` contributes 0 to graph_distance, just as a paper
-    /// outside `S_l` contributes 0 to bm25_rank).
-    pub fn build_graph_distance_rank(
-        candidates: &[i64],
-        depth_map: &HashMap<i64, i32>,
-    ) -> Vec<i64> {
-        let mut paired: Vec<(i64, i32)> = candidates
-            .iter()
-            .filter_map(|pid| depth_map.get(pid).map(|d| (*pid, *d)))
-            .collect();
-        // sort by depth ASC, then paper_id ASC for determinism.
-        paired.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-        paired.into_iter().map(|(pid, _)| pid).collect()
+    /// Returns true when v3 takes its **chained** push-down path —
+    /// i.e. there are two rankers (semantic AND lexical) so v3 can
+    /// chain BM25 push-down into pgvector. This is exactly Q6 and Q7.
+    /// Q4 / Q5 only have one ranker after the graph filter, so v3
+    /// delegates to v2's `multi_predicate_pushdown` instead.
+    pub fn uses_chained_pushdown(q: QueryType) -> bool {
+        let (sem, lex, _gph) = q.engines();
+        sem && lex
     }
 }
 
@@ -247,233 +229,127 @@ impl Plan for V3Plan {
     fn name(&self) -> &'static str { "v3" }
 
     async fn execute(&self, pool: &PgPool, q: QueryType, spec: &QuerySpec) -> Result<PlanResult> {
-        // v3 dispatch.
-        // Use V2Plan::should_use_pushdown as a feature flag: it returns
-        // true exactly when graph + ≥1 ranker coexist (Q4 / Q5 / Q7).
-        // Q6 (semantic + lexical, no graph) returns false here but v3
-        // still benefits from a single push-down (lexical → vector), so
-        // we handle Q6 in the multi-predicate driver too.
-        let has_graph_pushdown = V2Plan::should_use_pushdown(q);
-        tracing::trace!(plan = self.name(), qid = q.as_str(), has_graph_pushdown,
+        // v3 takes its chained-pushdown branch only when *both* rankers
+        // are present (Q6, Q7). Everything else falls through to v2's
+        // helpers verbatim — same SQL, same fusion, identical result.
+        // V2Plan::should_use_pushdown(q) lets us cross-check that v3's
+        // graph-pushdown classification agrees with v2's (Q4 / Q5 / Q7).
+        let chained = V3Plan::uses_chained_pushdown(q);
+        tracing::trace!(plan = self.name(), qid = q.as_str(),
+                        chained_pushdown = chained,
+                        v2_graph_pushdown = V2Plan::should_use_pushdown(q),
                         "v3 dispatch");
         match q {
             QueryType::Q1 => semantic_only(pool, spec, "v3", q).await,
             QueryType::Q2 => lexical_only(pool, spec, "v3", q).await,
             QueryType::Q3 => graph_only(pool, spec, "v3", q).await,
-            QueryType::Q4 | QueryType::Q5 | QueryType::Q6 | QueryType::Q7 => {
-                multi_predicate_v3(pool, q, spec).await
+            // Q4 / Q5: one ranker after graph push-down → v2 verbatim.
+            QueryType::Q4 | QueryType::Q5 => {
+                multi_predicate_pushdown(pool, q, spec, "v3").await
+            }
+            // Q6 / Q7: two rankers → chained BM25 → pgvector push-down.
+            QueryType::Q6 | QueryType::Q7 => {
+                multi_predicate_v3_chained(pool, q, spec).await
             }
         }
     }
 }
 
-/// V3 multi-predicate driver. Decides cost-based ordering for the
-/// hard predicates (BFS + BM25), pushes the first one's filter into
-/// the second, then re-scores all three engines on the resulting
-/// candidate set and RRF-fuses them.
-async fn multi_predicate_v3(
+/// v3's **chained push-down** driver for Q6 / Q7. Both queries have
+/// two rankers (semantic + lexical), so v3 narrows the candidate set
+/// in two successive push-down stages:
+///
+///   Q6 (sem ∩ lex):    BM25 top-N → pgvector top-K within that set
+///   Q7 (sem ∩ lex ∩ gph): BFS → BM25 top-N within S_g
+///                         → pgvector top-K within S_g ∩ top-N S_l
+///
+/// The final RRF fuses two signals: `vector_rank` (top-K pgvector on
+/// the smallest candidate set) and `bm25_rank` (top-N BM25 in the
+/// preceding stage). Graph is *not* a ranking signal — only a filter.
+async fn multi_predicate_v3_chained(
     pool: &PgPool,
     q: QueryType,
     spec: &QuerySpec,
 ) -> Result<PlanResult> {
     let (use_sem, use_lex, use_gph) = q.engines();
+    debug_assert!(use_sem && use_lex, "chained path requires both rankers (Q6/Q7)");
+
     let k = spec.k;
     let n_fetch = k * PER_ENGINE_OVERFETCH;
+    let depth = spec.depth.max(1).min(3);
 
     let mut predicates: Vec<PredicateEstimate> = Vec::new();
     let mut per_engine_rows: Vec<(Engine, usize)> = Vec::new();
     let mut actual_order: Vec<Engine> = Vec::new();
     let mut round_trips = 0u32;
     let mut materializations = 0u32;
+    let mut first_predicate: Option<Engine> = None;
 
-    // ---- pre-compute hard-predicate cost estimates ----
-    let depth = spec.depth.max(1).min(3);
-    let mut cost_bfs_ms = f64::INFINITY;
-    let mut cost_bm25_ms = f64::INFINITY;
-    let mut sel_bfs = 1.0_f64;
-    let mut sel_bm25 = 1.0_f64;
-    let mut matched_bm25: i64 = 0;
-
-    if use_lex {
-        // One round-trip to estimate matched count (same pattern v1/v2 use).
-        let text = spec.bm25_text.as_deref()
-            .context("Q5/Q6/Q7 require bm25_text")?;
-        let (m,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM papers WHERE abstract @@@ $1",
-        ).bind(text).fetch_one(pool).await.unwrap_or((0,));
-        matched_bm25 = m;
-        round_trips += 1;
-        cost_bm25_ms = V3Plan::cost_bm25_ms(m as usize);
-        sel_bm25 = cost::selectivity_lexical(m as usize, 5_011);
-    }
-    if use_gph {
-        cost_bfs_ms = V3Plan::cost_bfs_ms(depth);
-        sel_bfs = cost::selectivity_graph(n_fetch, 5_011); // pre-execution estimate
-    }
-
-    // ---- decide which hard predicate to materialize first (Q5/Q7) ----
-    let first_predicate_choice: Option<Engine> = if use_gph && use_lex {
-        let pick = V3Plan::pick_first_hard_predicate(
-            cost_bfs_ms, cost_bm25_ms, sel_bfs, sel_bm25,
-        );
-        tracing::info!(
-            plan = "v3",
-            qid = q.as_str(),
-            cost_bfs_ms,
-            cost_bm25_ms,
-            matched_bm25,
-            chosen = ?pick,
-            "v3 cost decision: which hard predicate first"
-        );
-        Some(pick)
-    } else if use_gph {
-        Some(Engine::Age)
-    } else if use_lex {
-        Some(Engine::PgSearch)
-    } else {
-        None
-    };
-
-    // ---- materialize hard predicates in chosen order ----
-    let anchor_opt = spec.anchor_paper;
-    let bm25_text_opt = spec.bm25_text.as_deref();
-
-    let mut s_g: Vec<i64> = Vec::new();
-    let mut depth_map: HashMap<i64, i32> = HashMap::new();
-    let mut s_l_with_score: Vec<(i64, f64)> = Vec::new(); // bm25 hits (top n_fetch)
-
-    let bm25_first =
-        matches!(first_predicate_choice, Some(Engine::PgSearch)) && use_gph;
-
-    if bm25_first {
-        // Path B: BM25 first → push the resulting id set into BFS-filter.
-        // BFS is still required (we need depths), but only papers in S_l
-        // contribute to the final ranking, so we just compute S_both at
-        // the end via intersection (Rust-side).
-        let text = bm25_text_opt.context("bm25_first path needs bm25_text")?;
-        s_l_with_score = run_bm25_full_hits(pool, text).await?;
+    // -- Stage 1 (Q7 only): BFS → S_g; Q6 skips this.
+    let graph_set: Option<Vec<i64>> = if use_gph {
+        let anchor = spec.anchor_paper.context("Q7 requires anchor_paper")?;
+        let ids = bfs_recursive_sql(pool, anchor, depth, Direction::Reverse).await?;
         round_trips += 1;
         materializations += 1;
-        per_engine_rows.push((Engine::PgSearch, s_l_with_score.len()));
-        actual_order.push(Engine::PgSearch);
-        predicates.push(PredicateEstimate {
-            engine: Engine::PgSearch,
-            raw_cost: cost::pg_search_cost(matched_bm25 as usize, 50.0),
-            ms_estimate: cost_bm25_ms,
-            selectivity: sel_bm25,
-        });
-
-        // BFS unrestricted (recursive SQL doesn't take a per-row filter
-        // cleanly; we'd need IN-list propagation in the recursion which
-        // PostgreSQL won't push down efficiently). We just run it; the
-        // intersection happens in Rust.
-        let anchor = anchor_opt.context("graph predicate needs anchor_paper")?;
-        let bfs_rows = bfs_recursive_sql_with_depth(pool, anchor, depth, Direction::Reverse).await?;
-        round_trips += 1;
-        materializations += 1;
-        per_engine_rows.push((Engine::Age, bfs_rows.len()));
+        per_engine_rows.push((Engine::Age, ids.len()));
         actual_order.push(Engine::Age);
-        s_g.reserve(bfs_rows.len());
-        for (pid, d) in &bfs_rows {
-            s_g.push(*pid);
-            depth_map.insert(*pid, *d);
-        }
-        let bfs_raw = cost::age_cost_v1(depth, 2.4);
+        first_predicate = Some(Engine::Age);
+        let raw = cost::age_cost_v1(depth, 26.3);
         predicates.push(PredicateEstimate {
             engine: Engine::Age,
-            raw_cost: bfs_raw,
-            ms_estimate: cost_bfs_ms,
-            selectivity: cost::selectivity_graph(s_g.len(), 5_011),
+            raw_cost: raw,
+            ms_estimate: cost::normalize(raw, Engine::Age, &EngineNorm::default()),
+            selectivity: cost::selectivity_graph(ids.len(), 5_011),
         });
-    } else if use_gph {
-        // Path A: BFS first → push S_g into BM25.
-        let anchor = anchor_opt.context("graph predicate needs anchor_paper")?;
-        let bfs_rows = bfs_recursive_sql_with_depth(pool, anchor, depth, Direction::Reverse).await?;
-        round_trips += 1;
-        materializations += 1;
-        per_engine_rows.push((Engine::Age, bfs_rows.len()));
-        actual_order.push(Engine::Age);
-        s_g.reserve(bfs_rows.len());
-        for (pid, d) in &bfs_rows {
-            s_g.push(*pid);
-            depth_map.insert(*pid, *d);
-        }
-        let bfs_raw = cost::age_cost_v1(depth, 2.4);
-        predicates.push(PredicateEstimate {
-            engine: Engine::Age,
-            raw_cost: bfs_raw,
-            ms_estimate: cost_bfs_ms,
-            selectivity: cost::selectivity_graph(s_g.len(), 5_011),
-        });
-
-        if s_g.is_empty() {
+        if ids.is_empty() {
             return Ok(PlanResult {
                 plan: "v3", query: q,
                 paper_ids: vec![],
                 predicates,
-                first_predicate: first_predicate_choice,
+                first_predicate,
                 per_engine_rows,
                 round_trips,
                 materializations,
                 actual_order,
             });
         }
-
-        if use_lex {
-            let text = bm25_text_opt.context("lex predicate needs bm25_text")?;
-            s_l_with_score = run_bm25_pushdown_full(pool, text, &s_g).await?;
-            round_trips += 1;
-            materializations += 1;
-            per_engine_rows.push((Engine::PgSearch, s_l_with_score.len()));
-            actual_order.push(Engine::PgSearch);
-            predicates.push(PredicateEstimate {
-                engine: Engine::PgSearch,
-                raw_cost: cost::pg_search_cost(matched_bm25 as usize, 50.0),
-                ms_estimate: cost_bm25_ms,
-                selectivity: sel_bm25,
-            });
-        }
-    } else if use_lex {
-        // No graph: Q6 path. BM25 first, no BFS.
-        let text = bm25_text_opt.context("lex predicate needs bm25_text")?;
-        s_l_with_score = run_bm25_full_hits(pool, text).await?;
-        round_trips += 1;
-        materializations += 1;
-        per_engine_rows.push((Engine::PgSearch, s_l_with_score.len()));
-        actual_order.push(Engine::PgSearch);
-        predicates.push(PredicateEstimate {
-            engine: Engine::PgSearch,
-            raw_cost: cost::pg_search_cost(matched_bm25 as usize, 50.0),
-            ms_estimate: cost_bm25_ms,
-            selectivity: sel_bm25,
-        });
-    }
-
-    // ---- compute S_both = S_g ∩ S_l (whichever is present) ----
-    let s_both: Vec<i64> = if use_gph && use_lex {
-        let g_set: std::collections::HashSet<i64> = s_g.iter().copied().collect();
-        let mut both: Vec<(i64, f64)> = s_l_with_score.iter()
-            .filter(|(pid, _)| g_set.contains(pid))
-            .copied()
-            .collect();
-        // preserve BM25 order (already DESC) within S_both
-        s_l_with_score = both.clone();
-        both.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        both.into_iter().map(|(pid, _)| pid).collect()
-    } else if use_gph {
-        s_g.clone()
-    } else if use_lex {
-        s_l_with_score.iter().map(|(pid, _)| *pid).collect()
+        Some(ids)
     } else {
-        vec![] // never hit for Q4-Q7
+        None
     };
 
-    if s_both.is_empty() {
+    // -- Stage 2: BM25 top-N. If S_g present, push-down into BM25.
+    let text = spec.bm25_text.as_deref()
+        .context("v3 chained path requires bm25_text")?;
+    let bm25_top_n: Vec<i64> = match &graph_set {
+        Some(gs) => run_bm25_pushdown(pool, text, n_fetch, gs).await?,
+        None     => run_bm25_topn(pool, text, n_fetch).await?,
+    };
+    round_trips += 1;
+    materializations += 1;
+    per_engine_rows.push((Engine::PgSearch, bm25_top_n.len()));
+    actual_order.push(Engine::PgSearch);
+    if first_predicate.is_none() {
+        first_predicate = Some(Engine::PgSearch);
+    }
+    // Use a coarse matched estimate equal to bm25_top_n.len() — we
+    // don't need the exact `count(*)` since cost ordering doesn't
+    // matter for v3 (the chain is fixed). Selectivity is reported for
+    // analysis only.
+    let bm25_raw = cost::pg_search_cost(bm25_top_n.len(), 50.0);
+    predicates.push(PredicateEstimate {
+        engine: Engine::PgSearch,
+        raw_cost: bm25_raw,
+        ms_estimate: cost::normalize(bm25_raw, Engine::PgSearch, &EngineNorm::default()),
+        selectivity: cost::selectivity_lexical(bm25_top_n.len(), 5_011),
+    });
+
+    if bm25_top_n.is_empty() {
         return Ok(PlanResult {
             plan: "v3", query: q,
             paper_ids: vec![],
             predicates,
-            first_predicate: first_predicate_choice,
+            first_predicate,
             per_engine_rows,
             round_trips,
             materializations,
@@ -481,131 +357,49 @@ async fn multi_predicate_v3(
         });
     }
 
-    // ---- final stage: push S_both into pgvector ranker if Q4/Q6/Q7 ----
-    let mut vector_rank: Vec<i64> = Vec::new();
-    if use_sem {
-        let seed = spec.seed_chunk_id
-            .context("semantic predicate needs seed_chunk_id")?;
-        vector_rank = run_semantic_pushdown(pool, seed, n_fetch, spec.ef_search, &s_both).await?;
-        round_trips += 2;
-        materializations += 1;
-        per_engine_rows.push((Engine::Pgvector, vector_rank.len()));
-        actual_order.push(Engine::Pgvector);
-        let raw = cost::pgvector_cost(spec.ef_search, s_both.len().max(2));
-        predicates.push(PredicateEstimate {
-            engine: Engine::Pgvector,
-            raw_cost: raw,
-            ms_estimate: cost::normalize(raw, Engine::Pgvector, &EngineNorm::default()),
-            selectivity: cost::selectivity_semantic(k, s_both.len().max(1)),
-        });
-    }
+    // -- Stage 3: pgvector top-K push-down into the BM25 subset.
+    let seed = spec.seed_chunk_id
+        .context("v3 chained path requires seed_chunk_id")?;
+    let vector_top_k = run_semantic_pushdown(
+        pool, seed, n_fetch, spec.ef_search, &bm25_top_n,
+    ).await?;
+    round_trips += 2; // SET LOCAL group + query
+    materializations += 1;
+    per_engine_rows.push((Engine::Pgvector, vector_top_k.len()));
+    actual_order.push(Engine::Pgvector);
+    let pgv_raw = cost::pgvector_cost(spec.ef_search, bm25_top_n.len().max(2));
+    predicates.push(PredicateEstimate {
+        engine: Engine::Pgvector,
+        raw_cost: pgv_raw,
+        ms_estimate: cost::normalize(pgv_raw, Engine::Pgvector, &EngineNorm::default()),
+        selectivity: cost::selectivity_semantic(k, bm25_top_n.len().max(1)),
+    });
 
-    // ---- build the three rankings (vector / bm25 / graph_distance) ----
-    let mut rankings: Vec<Ranking<'static>> = Vec::new();
-    if use_sem {
-        rankings.push(Ranking { engine: "pgvector", paper_ids: vector_rank });
-    }
-    if use_lex {
-        // bm25 score-ordered restriction to S_both
-        let s_both_set: std::collections::HashSet<i64> = s_both.iter().copied().collect();
-        let mut bm25_pairs: Vec<(i64, f64)> = s_l_with_score
-            .iter()
-            .filter(|(pid, _)| s_both_set.contains(pid))
-            .copied()
-            .collect();
-        bm25_pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        rankings.push(Ranking {
-            engine: "pg_search",
-            paper_ids: bm25_pairs.into_iter().map(|(pid, _)| pid).collect(),
-        });
-    }
-    if use_gph {
-        let gdr = V3Plan::build_graph_distance_rank(&s_both, &depth_map);
-        rankings.push(Ranking { engine: "graph_distance", paper_ids: gdr });
-    }
-
-    // log fused engine list (this read of Ranking::engine clears the
-    // existing dead-code warning at release).
+    // -- Stage 4: RRF over (vector_rank, bm25_rank). Graph stays out
+    //    of the ranking signal — see V3Plan docstring for why.
+    let rankings = vec![
+        Ranking { engine: "pgvector",  paper_ids: vector_top_k },
+        Ranking { engine: "pg_search", paper_ids: bm25_top_n },
+    ];
     tracing::debug!(
         plan = "v3",
         qid = q.as_str(),
         engines = ?rankings.iter().map(|r| r.engine).collect::<Vec<_>>(),
-        candidate_pool = s_both.len(),
-        "v3 RRF fusion"
+        "v3 chained RRF: vector + bm25 (graph used as filter only)"
     );
+    let final_ids = fuse(&rankings, &FusionStrategy::rrf_default(), None, k);
 
-    let strategy = FusionStrategy::rrf_default();
-    let final_ids = if rankings.is_empty() {
-        vec![]
-    } else if rankings.len() == 1 {
-        rankings[0].paper_ids.iter().take(k).copied().collect()
-    } else {
-        fuse(&rankings, &strategy, None, k)
-    };
-
+    let _ = use_lex; // silence in case future refactor drops the assert
     Ok(PlanResult {
         plan: "v3", query: q,
         paper_ids: final_ids,
         predicates,
-        first_predicate: first_predicate_choice,
+        first_predicate,
         per_engine_rows,
         round_trips,
         materializations,
         actual_order,
     })
-}
-
-/// Hard upper bound on how many BM25 hits v3 materializes as the
-/// `S_l` filter set. The brief's `S_l` is "the BM25 hit set" — i.e.
-/// every paper matching `@@@`. In practice we cap to keep
-/// `id = ANY($S_l)` push-down arrays manageable; 5000 is large
-/// enough that even broad queries (e.g. "neural network") are
-/// fully captured on the 50K corpus.
-const V3_BM25_HIT_CAP: i64 = 5_000;
-
-/// All BM25 hits (up to V3_BM25_HIT_CAP), score-ordered DESC. Used
-/// by v3 to materialize `S_l` as both a *filter set* (push-down) and
-/// a *ranking signal* (top-N slice for bm25_rank). Q6 and the
-/// "BM25 first" path of Q5/Q7 both call this.
-async fn run_bm25_full_hits(pool: &PgPool, text: &str) -> Result<Vec<(i64, f64)>> {
-    let rows = sqlx::query(
-        "SELECT id, paradedb.score(id) AS s FROM papers \
-         WHERE abstract @@@ $1 \
-         ORDER BY paradedb.score(id) DESC LIMIT $2",
-    )
-    .bind(text)
-    .bind(V3_BM25_HIT_CAP)
-    .fetch_all(pool).await?;
-    Ok(rows.iter().filter_map(|r| {
-        let pid: i64 = r.try_get(0).ok()?;
-        let s: f32 = r.try_get(1).ok()?;
-        Some((pid, s as f64))
-    }).collect())
-}
-
-/// All BM25 hits restricted via `id = ANY($graph_set)`, score-ordered
-/// DESC. The "BFS first → push graph filter into BM25" path of v3
-/// Q5 / Q7. Returns full intersection (up to V3_BM25_HIT_CAP) so the
-/// downstream pgvector push-down sees every paper in `S_g ∩ S_l`.
-async fn run_bm25_pushdown_full(
-    pool: &PgPool,
-    text: &str,
-    graph_set: &[i64],
-) -> Result<Vec<(i64, f64)>> {
-    let rows = sqlx::query(
-        "SELECT id, paradedb.score(id) AS s FROM papers \
-         WHERE abstract @@@ $1 AND id = ANY($2) \
-         ORDER BY paradedb.score(id) DESC LIMIT $3",
-    )
-    .bind(text)
-    .bind(graph_set)
-    .bind(V3_BM25_HIT_CAP)
-    .fetch_all(pool).await?;
-    Ok(rows.iter().filter_map(|r| {
-        let pid: i64 = r.try_get(0).ok()?;
-        let s: f32 = r.try_get(1).ok()?;
-        Some((pid, s as f64))
-    }).collect())
 }
 
 // ============ shared single-predicate runners ============
@@ -1163,7 +957,7 @@ mod tests {
         assert_eq!(V2Plan.name(), "v2");
     }
 
-    // ---------- V3Plan (multi-stage push-down + cost ordering + fusion recovery) ----------
+    // ---------- V3Plan (chained push-down: v2 optimization) ----------
 
     #[test]
     fn v3_plan_name_is_v3() {
@@ -1171,82 +965,77 @@ mod tests {
     }
 
     #[test]
-    fn v3_cost_ordering_picks_cheaper_predicate() {
-        // BFS cheaper than BM25 → BFS first.
-        assert_eq!(
-            V3Plan::pick_first_hard_predicate(/*bfs*/ 1.0, /*bm25*/ 10.0,
-                                              /*sel_bfs*/ 0.5, /*sel_bm25*/ 0.5),
-            Engine::Age,
-        );
-        // BM25 cheaper → BM25 first.
-        assert_eq!(
-            V3Plan::pick_first_hard_predicate(10.0, 1.0, 0.5, 0.5),
-            Engine::PgSearch,
-        );
-        // Tie on cost → smaller selectivity (more selective) wins.
-        assert_eq!(
-            V3Plan::pick_first_hard_predicate(1.0, 1.0, 0.01, 0.5),
-            Engine::Age,
-        );
-        assert_eq!(
-            V3Plan::pick_first_hard_predicate(1.0, 1.0, 0.5, 0.01),
-            Engine::PgSearch,
-        );
-        // Full tie → BFS wins (graph push-down on ranker is cheaper to wire).
-        assert_eq!(
-            V3Plan::pick_first_hard_predicate(1.0, 1.0, 0.5, 0.5),
-            Engine::Age,
-        );
+    fn v3_uses_chained_pushdown_only_when_both_rankers_present() {
+        // v3's chained path = BM25 push-down → pgvector push-down →
+        // RRF(vector, bm25). It requires *both* semantic and lexical
+        // rankers, which is exactly Q6 and Q7. Q4 / Q5 have only one
+        // ranker after the graph push-down, so v3 delegates to v2.
+        assert!(V3Plan::uses_chained_pushdown(QueryType::Q6));
+        assert!(V3Plan::uses_chained_pushdown(QueryType::Q7));
+
+        // Single-ranker (after graph filter) — v3 delegates to v2:
+        assert!(!V3Plan::uses_chained_pushdown(QueryType::Q4));
+        assert!(!V3Plan::uses_chained_pushdown(QueryType::Q5));
+
+        // Single-engine baselines — v3 collapses to same helpers v2 uses:
+        assert!(!V3Plan::uses_chained_pushdown(QueryType::Q1));
+        assert!(!V3Plan::uses_chained_pushdown(QueryType::Q2));
+        assert!(!V3Plan::uses_chained_pushdown(QueryType::Q3));
     }
 
     #[test]
-    fn v3_cost_bfs_reuses_branching_pow_depth() {
-        // Sanity-check that V3Plan::cost_bfs_ms is monotone in depth —
-        // doubles or more from depth 1 → 2 — i.e., still the
-        // exponential model from cost::age_cost_v1. We don't refit.
-        let c1 = V3Plan::cost_bfs_ms(1);
-        let c2 = V3Plan::cost_bfs_ms(2);
-        let c3 = V3Plan::cost_bfs_ms(3);
-        assert!(c2 > c1);
-        assert!(c3 > c2);
-        // exponential, not linear: c3 / c1 should be > 4 with b=2.4.
-        assert!(c3 / c1 > 4.0, "expected exponential growth, got c3/c1 = {}", c3 / c1);
+    fn v3_chained_set_and_v2_graph_pushdown_set_are_distinct() {
+        // v2's graph-pushdown set (Q4/Q5/Q7) and v3's chained-pushdown
+        // set (Q6/Q7) overlap only at Q7 — that's where both
+        // optimizations stack (graph filter + chained ranker
+        // push-down). Q6 is uniquely a v3 path (no graph to push down,
+        // but v3 still chains BM25 → pgvector); Q4 / Q5 are uniquely
+        // v2 paths (graph push-down but only one ranker downstream).
+        let chained: Vec<_> = [QueryType::Q1, QueryType::Q2, QueryType::Q3,
+                               QueryType::Q4, QueryType::Q5, QueryType::Q6,
+                               QueryType::Q7]
+            .into_iter()
+            .filter(|q| V3Plan::uses_chained_pushdown(*q))
+            .collect();
+        let v2_pd: Vec<_> = [QueryType::Q1, QueryType::Q2, QueryType::Q3,
+                             QueryType::Q4, QueryType::Q5, QueryType::Q6,
+                             QueryType::Q7]
+            .into_iter()
+            .filter(|q| V2Plan::should_use_pushdown(*q))
+            .collect();
+        assert_eq!(chained, vec![QueryType::Q6, QueryType::Q7]);
+        assert_eq!(v2_pd,    vec![QueryType::Q4, QueryType::Q5, QueryType::Q7]);
+        // Q7 is in both sets.
+        assert!(chained.contains(&QueryType::Q7));
+        assert!(v2_pd.contains(&QueryType::Q7));
     }
 
     #[test]
-    fn v3_graph_distance_rank_orders_by_depth_asc() {
-        // Candidates 10 / 20 / 30 / 40, with depths 3 / 1 / 2 / 1.
-        // Expected order: 20 (d=1), 40 (d=1), 30 (d=2), 10 (d=3).
-        // Within same depth, tie-break by paper_id asc.
-        let candidates = vec![10, 20, 30, 40];
-        let mut dm = HashMap::new();
-        dm.insert(10, 3);
-        dm.insert(20, 1);
-        dm.insert(30, 2);
-        dm.insert(40, 1);
-        let ranked = V3Plan::build_graph_distance_rank(&candidates, &dm);
-        assert_eq!(ranked, vec![20, 40, 30, 10]);
-    }
-
-    #[test]
-    fn v3_graph_distance_rank_drops_papers_outside_bfs_set() {
-        // Candidate 50 isn't in the BFS depth_map — should be dropped
-        // (sentinel = "outside this engine's ranking", not appended at
-        // tail). Documented in docs/v3_design.md §3.
-        let candidates = vec![10, 50, 20];
-        let mut dm = HashMap::new();
-        dm.insert(10, 2);
-        dm.insert(20, 1);
-        let ranked = V3Plan::build_graph_distance_rank(&candidates, &dm);
-        assert_eq!(ranked, vec![20, 10]);
-        assert!(!ranked.contains(&50));
+    fn v3_fuses_two_rankers_not_three() {
+        // Sanity check on RRF input shape for the chained path. v3
+        // feeds vector_rank + bm25_rank into RRF (NO graph_distance).
+        // We construct the same Ranking shape the driver builds and
+        // confirm fuse() consumes a 2-element rankings slice cleanly.
+        let v = Ranking { engine: "pgvector",  paper_ids: vec![10, 20, 30] };
+        let b = Ranking { engine: "pg_search", paper_ids: vec![20, 30, 40] };
+        let rankings = vec![v, b];
+        assert_eq!(rankings.len(), 2, "v3 chained RRF must fuse exactly 2 signals");
+        let fused = fuse(&rankings, &FusionStrategy::rrf_default(), None, 5);
+        // Paper 20 + 30 appear in both → must be ranked above 10 and 40.
+        assert!(fused.contains(&20));
+        assert!(fused.contains(&30));
+        let pos = |pid: i64| fused.iter().position(|p| *p == pid).unwrap();
+        assert!(pos(20) < pos(10), "paper 20 (in both) should rank above 10 (only sem)");
+        assert!(pos(30) < pos(40), "paper 30 (in both) should rank above 40 (only lex)");
     }
 
     #[test]
     fn v3_uses_v2_should_use_pushdown_to_classify_queries() {
-        // V3Plan's dispatch logic uses V2Plan::should_use_pushdown to
-        // identify which queries have a graph push-down opportunity.
-        // This test asserts the boolean agrees with v3's expectations.
+        // V3Plan's dispatch agrees with V2Plan's graph-pushdown
+        // classifier for the queries that go through v2's
+        // multi_predicate_pushdown helper (Q4 / Q5 / Q7). Exercising
+        // V2Plan::should_use_pushdown here keeps the function alive at
+        // release (it would otherwise be dead-code-pruned).
         assert!(V2Plan::should_use_pushdown(QueryType::Q4));
         assert!(V2Plan::should_use_pushdown(QueryType::Q5));
         assert!(V2Plan::should_use_pushdown(QueryType::Q7));
