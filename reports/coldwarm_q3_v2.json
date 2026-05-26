@@ -5,19 +5,19 @@
   "cold_method": "container-restart",
   "warmup": 5,
   "cold": {
-    "p50_us": 3093,
-    "p95_us": 3241,
-    "p99_us": 3241,
-    "max_us": 3241,
+    "p50_us": 2899,
+    "p95_us": 3515,
+    "p99_us": 3515,
+    "max_us": 3515,
     "n": 5
   },
   "warm": {
-    "p50_us": 743,
-    "p95_us": 786,
-    "p99_us": 786,
-    "max_us": 786,
+    "p50_us": 738,
+    "p95_us": 766,
+    "p99_us": 766,
+    "max_us": 766,
     "n": 5
   },
-  "cold_over_warm_p50": 4.162853297442799,
-  "cold_over_warm_p95": 4.123409669211196
+  "cold_over_warm_p50": 3.9281842818428183,
+  "cold_over_warm_p95": 4.588772845953002
 }

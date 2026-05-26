@@ -69,12 +69,12 @@
     {
       "name": "ag_catalog.papers_bm25_idx",
       "kind": "index",
-      "bytes": 30187520
+      "bytes": 30253056
     },
     {
       "name": "ag_catalog.chunk_embeddings_hnsw_cos",
       "kind": "index",
-      "bytes": 52862976
+      "bytes": 52912128
     },
     {
       "name": "paradedb._typmod_cache_pkey",
@@ -132,14 +132,14 @@
     "age_index_mb": 22.15625,
     "age_table_bytes": 24936448,
     "age_table_mb": 23.78125,
-    "bm25_index_bytes": 30187520,
-    "bm25_index_mb": 28.7890625,
-    "hnsw_index_bytes": 52862976,
-    "hnsw_index_mb": 50.4140625,
-    "overhead_ratio": 1.0573635223447093,
+    "bm25_index_bytes": 30253056,
+    "bm25_index_mb": 28.8515625,
+    "hnsw_index_bytes": 52912128,
+    "hnsw_index_mb": 50.4609375,
+    "overhead_ratio": 1.0582876757541753,
     "primary_keys_bytes": 18202624,
     "relational_tables_bytes": 124100608,
     "relational_tables_mb": 118.3515625,
-    "total_index_bytes": 149422080
+    "total_index_bytes": 149536768
   }
 }
