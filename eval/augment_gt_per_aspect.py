@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""Add per-aspect labels (label_sem / label_lex / label_gph) to ground-truth.jsonl.
+"""Compute per-aspect labels (label_sem / label_lex / label_gph) for ground-truth.jsonl.
 
-Background: the original GT was labelled with a single fuzzy "topical
-relevance" rubric. Multi-predicate queries (Q4 = sem ∩ gph, Q5 = lex ∩
-gph, Q6 = sem ∩ lex, Q7 = all three) need separate judgements per
-predicate so the AND can be computed cleanly at eval time:
+Each (qid, paper_id) row gets three independent labels:
 
-  label_sem = HUMAN topical judgment  ← existing `label` column
-  label_lex = OPERATIONAL: BM25 @@@ matches abstract        (automated)
-  label_gph = OPERATIONAL: paper_id ∈ BFS_reverse(anchor,d) (automated)
+  label_sem = human topical judgment  (kept as-is from the `label` column)
+  label_lex = SQL: BM25 @@@ matches abstract              (automated)
+  label_gph = SQL: paper_id ∈ BFS_reverse(anchor, depth)  (automated)
 
 Effective relevance per query type at eval time:
 
@@ -20,19 +17,16 @@ Effective relevance per query type at eval time:
   Q6 sem∩lex  → label_sem ∧ label_lex
   Q7 all      → label_sem ∧ label_lex ∧ label_gph
 
-This decoupling fixes Q6/Q7 specifically: papers semantically about the
-seed topic but with abstracts that don't BM25-match the lex predicate
-should NOT count as relevant for Q6 (the query explicitly demands lex
-match). Under the previous single-label scheme they did — biasing
-evaluation against any plan (notably v3 chained push-down) that
-correctly enforces the lex predicate at retrieval time.
+The split keeps fuzzy axes (semantics) with the human and strict axes
+(BM25 / BFS) with the engine itself, so a paper "topically about the
+seed" but whose abstract doesn't BM25-match the lex predicate correctly
+counts as non-relevant for Q6 (which explicitly demands the lex match).
 
-This script is idempotent: re-running just refreshes label_lex /
-label_gph without touching label_sem.
+This script is idempotent: re-running refreshes label_lex / label_gph
+without touching label_sem.
 
-Output: rewrites `eval/ground-truth.jsonl` in place. Each row now has
-both the original `label` field (kept for backwards compatibility,
-copied from label_sem) and three new fields:
+Output: rewrites `eval/ground-truth.jsonl` in place. Each row carries:
+  - label      (int 0/1, kept as an alias of label_sem for back-compat)
   - label_sem  (int 0/1)
   - label_lex  (int 0/1, or None if query has no lex predicate)
   - label_gph  (int 0/1, or None if query has no graph predicate)

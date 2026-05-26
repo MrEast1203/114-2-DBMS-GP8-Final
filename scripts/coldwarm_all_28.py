@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Cold OS-drop full sweep — 28-cell version (adds v3).
+"""Cold OS-drop full sweep — 28-cell cold/warm matrix.
 
 Runs bench cold-warm with --cold-method container-restart on all 28
-cells (7 queries × 4 plans: naive, v1, v2, v3). Mirrors
-coldwarm_all_21.py exactly; the v3 row is appended so the 21-cell
-matrix (naive/v1/v2) remains reproducible from the older script.
+cells (7 queries × 4 plans: naive, v1, v2, v3). Writes one JSON per
+cell into reports/coldwarm_q{1..7}_{plan}.json plus a consolidated
+reports/coldwarm_v3.json.
 
 container-restart strategy is portable across macOS / WSL / Linux —
 unlike /proc/sys/vm/drop_caches which is read-only on macOS Docker.

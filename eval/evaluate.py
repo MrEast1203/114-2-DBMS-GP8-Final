@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Run naive / v1 / v2 / v3 across all labelled queries and compute
-Phase 1 §E4 consistency metrics: NDCG@10, Jaccard@10, RBO@10.
+the consistency metrics: NDCG@10, Jaccard@10, RBO@10.
 
 Jaccard / RBO are reported pair-wise:
-  * v1 / v2 / v3 vs naive (baseline)
+  * v1 / v2 / v3 vs naive
   * v3 vs v2 (diagnostic: how much does the multi-stage push-down +
     fusion-signal recovery move the result set?)
 
-For each query in eval/queries.jsonl, we invoke researchdb-bench seven
-once per plan and parse the resulting top-k. Latency is collected
-inline too (median across the harness's per-call timings).
+For each query in eval/queries.jsonl, we invoke researchdb-bench once
+per plan and parse the resulting top-k. Latency is collected inline
+too (median across the harness's per-call timings).
 
-Output: reports/eval_v3.json by default (override with --out). The
-pre-v3 baseline `reports/eval_phase1_e4.json` is deliberately not
-overwritten.
+NDCG uses per-aspect AND ground truth: each (qid, paper_id) carries a
+trio of labels (label_sem from human, label_lex / label_gph from SQL),
+and effective relevance is the predicate AND specific to the query
+type (see QTYPE_PREDICATES below).
+
+Output: reports/eval_v3.json by default (override with --out).
 """
 from __future__ import annotations
 

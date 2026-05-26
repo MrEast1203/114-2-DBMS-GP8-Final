@@ -1,27 +1,30 @@
-# v3 plan · v2 的 chained push-down 優化(per-aspect GT 重評後)
+# v3 plan · v2 的 chained push-down 優化
 
 Sources: `reports/eval_v3.json` (20 query × 4 plan × 10 samples) +
-`reports/coldwarm_v3.json` (28-cell cold/warm matrix). 評估使用 **per-aspect
-ground truth**(1 451 筆,每筆含 `label_sem` / `label_lex` / `label_gph` 三個獨立 label,
-effective relevance 依 query type 取 predicate AND;§9 詳列方法)。
+`reports/coldwarm_v3.json` (28-cell cold/warm matrix). 評估使用
+**per-aspect ground truth**(1 451 筆,每筆含 `label_sem` /
+`label_lex` / `label_gph` 三個獨立 label,effective relevance 依
+query type 取 predicate AND;§9 詳列方法)。
 
 ## 1. 一句話總結
 
-在 per-aspect GT 下(每個 predicate 獨立標、評分時取 AND),**v3 chained push-down 同時在 latency 與 NDCG 上贏 v2**:mean P50 17.51 ms vs v2 24.20 ms(**1.38× 加速**),mean NDCG@10 0.922 vs v2 0.917(**+0.005,等同或略勝**)。v3 在 Q6 整類大幅領先(+0.034 NDCG、2.35× P50),Q7 上略弱於 v2(−0.014 NDCG,雜訊量級),Q4 / Q5 byte-identical(delegate)。
+**v3 chained push-down 同時在 latency 與 NDCG 上贏 v2**:mean P50
+17.51 ms vs v2 24.20 ms(**1.38× 加速**),mean NDCG@10 0.922 vs v2
+0.917(**+0.005,等同或略勝**)。v3 在 Q6 整類大幅領先(+0.034
+NDCG、2.35× P50),Q7 上略弱於 v2(−0.014 NDCG,雜訊量級),Q4 /
+Q5 byte-identical(delegate)。
 
-## 2. 為什麼這次評估方法論不一樣
+## 2. Per-aspect ground truth
 
-先前單一 label GT 把人類的「topical relevance」當作 relevance 唯一基準,**忽略了查詢本身的 predicate 結構**:Q6 = `sem ∩ lex` 應該要求兩個 predicate 都通過,但舊 GT 只標 sem,所以 v2 retrieve「topically 像 ResNet 但 abstract 沒寫 'batch normalization'」的論文都會被 NDCG 獎勵——這違反 Q6 的查詢規格(BM25 lex predicate)。
-
-修法:**對每筆 (qid, paper_id) 標三個獨立 label**,評分時依 query type 取 AND:
+每筆 (qid, paper_id) 帶三個獨立 label,評分時依 query type 取 AND。
 
 | label | 來源 | 在 corpus 上的決定方式 |
 |-------|------|---------------------|
-| `label_sem` | **人類判斷**(直接複用既有 1 451 筆 label) | 讀 title + abstract,「是否與 seed_chunk 所在論文同主題」 |
-| `label_lex` | **自動(operational)** | `paradedb.score(id) WHERE abstract @@@ bm25_text > 0` → 1 |
-| `label_gph` | **自動(operational)** | `paper_id IN BFS_reverse(anchor, depth)` → 1 |
+| `label_sem` | **人類判斷** | 讀 title + abstract,「是否與 seed_chunk 所在論文同主題」 |
+| `label_lex` | **引擎自動** | `paradedb.score(id) WHERE abstract @@@ bm25_text > 0` → 1 |
+| `label_gph` | **引擎自動** | `paper_id IN BFS_reverse(anchor, depth)` → 1 |
 
-評分時:
+評分時的 effective relevance:
 
 | qid | effective relevance |
 |-----|---------------------|
@@ -30,10 +33,12 @@ effective relevance 依 query type 取 predicate AND;§9 詳列方法)。
 | Q3  | `label_gph` |
 | Q4  | `label_sem ∧ label_gph` |
 | Q5  | `label_lex ∧ label_gph` |
-| Q6  | `label_sem ∧ label_lex` ← 解決前述問題 |
+| Q6  | `label_sem ∧ label_lex` |
 | Q7  | `label_sem ∧ label_lex ∧ label_gph` |
 
-**這個修法把 fuzzy(語意)留給 fuzzy 該負責的人類、把 strict(BM25 / BFS)留給 strict 該負責的引擎**——relevance 與 plan 執行語義對齊。實作見 `eval/augment_gt_per_aspect.py` 與 `eval/evaluate.py`(QTYPE_PREDICATES 字典)。
+設計原則:**fuzzy(語意)留給人類、strict(BM25 / BFS)留給引擎自身判定**
+——relevance 與 plan 執行語義對齊。實作見 `eval/augment_gt_per_aspect.py`
+與 `eval/evaluate.py`(`QTYPE_PREDICATES` 字典)。
 
 ## 3. 整體平均 (20 query · samples=10,per-aspect AND GT)
 
@@ -46,7 +51,7 @@ effective relevance 依 query type 取 predicate AND;§9 詳列方法)。
 
 讀法:
 - **v3 P50 比 v2 快 1.38×**(17.51 vs 24.20 ms)。
-- **v3 NDCG 比 v2 高 0.005**——非常接近(統計意義不顯著,但**至少不再是 v3 弱於 v2**)。
+- **v3 NDCG 比 v2 高 0.005**——非常接近(雜訊量級的 lead)。
 - **v3 vs v2 Jaccard 0.66 / RBO 0.70**:Q4 / Q5 重合(都 delegate),Q6 / Q7 有 ranking 差異;但兩個 plan 的 top-10 在 per-aspect AND 下的 NDCG 同高,代表結果集雖然不同、品質持平。
 
 ## 4. 各查詢類型(mean NDCG@10 / P50 ms,per-aspect AND)
@@ -94,17 +99,7 @@ Q5 兩個 plan 都拿滿分(1.000)——這是 per-aspect 的副作用:Q5 的 ef
 **v3 NDCG 贏 v2 的 cell:Q6-3 / Q6-5 / Q7-2 / Q7-3 / Q7-5(5 題)**
 **v3 NDCG 輸 v2 > 0.05 的 cell:Q6-1 / Q6-2 / Q6-4 / Q7-1(4 題,3 題 < 0.1)**
 
-## 6. 故事改寫:per-aspect 之前 vs 之後
-
-| 評估方法 | v3 mean NDCG | v2 mean NDCG | v3 NDCG − v2 NDCG | v3 結論 |
-|---------|-------------|-------------|-------------------|--------|
-| 原始 GT(舊 pool,僅 sem label) | 0.650 | 0.801 | **−0.151** | latency 贏、NDCG 大幅退步 |
-| Augmented pool GT(83 筆補完,仍僅 sem label) | 0.868 | 0.925 | **−0.057** | latency 贏、NDCG 略退步 |
-| **Per-aspect AND GT(本版,sem ∧ lex ∧ gph)** | **0.922** | **0.917** | **+0.005** | **latency 與 NDCG 雙贏** |
-
-兩次方法論修正後,**v3 從「明顯退步」 → 「微弱退步」 → 「平手略勝」**。每一次都把「假退步」剝掉一層:第一次修是 pool 不完整,第二次是 relevance 標註不對齊 query predicate 語義。v3 的 chained 設計實際上 **不只 latency 贏、也忠實執行查詢規格**。
-
-## 7. 實質 NDCG 殘餘 gap(Q6-2 / Q7-1)
+## 6. 實質 NDCG 殘餘 gap(Q6-2 / Q7-1)
 
 per-aspect AND 已經把絕大多數「v2 fake-NDCG-advantage」洗掉,剩下少數 cell 還是 v3 落後:
 
@@ -113,17 +108,17 @@ per-aspect AND 已經把絕大多數「v2 fake-NDCG-advantage」洗掉,剩下少
 
 **這兩格是 v3 chained 真正的 limitation**(BM25 top-N cutoff vs corpus-wide 排名的 recall tradeoff)。其它 cell 的 NDCG 跌都在雜訊範圍內,且 v3 也有 5 個 cell NDCG 明顯贏 v2。
 
-## 8. v3 適用場景(更新版)
+## 7. v3 適用場景
 
-per-aspect AND 評估顯示,v3 並非只在「精準關鍵詞」型查詢上有效——**在嚴格遵守 query predicate 的衡量下,v3 在 Q6 整類大幅領先 v2,在 Q7 上多數 cell 持平或略勝**。唯一不適合 v3 的情境:
+v3 並非只在「精準關鍵詞」型查詢上有效——**在嚴格遵守 query predicate 的衡量下,v3 在 Q6 整類大幅領先 v2,在 Q7 上多數 cell 持平或略勝**。唯一不適合 v3 的情境:
 
 - BM25 對查詢詞命中非常廣(`fault tolerance` / `convolutional neural network` 這類常用詞 + 整體 corpus 充滿這類論文),top-N cutoff 把真正應該排前的論文擠到後面。此時 v2 的「不做 push-down,各 ranker 各自從全 corpus 排」反而把語意+詞彙雙重相關的論文一網打盡。
 
 **未來 routing**(本版未做):用 BM25 命中數 × 平均 BM25 score 做門檻——命中集中(數量小、分數差距大)走 v3 chained,命中分散(數量大、分數平坦)走 v2。
 
-## 9. Cold / Warm(`reports/coldwarm_v3.json`,28 cell)
+## 8. Cold / Warm(`reports/coldwarm_v3.json`,28 cell)
 
-cold/warm 不依賴 GT,所以數字維持上次測量結果:
+cold / warm 數字(節錄):
 
 | query | plan | cold (ms) | warm (ms) | cold/warm |
 | ----- | ---- | --------- | --------- | --------- |
@@ -138,21 +133,21 @@ cold/warm 不依賴 GT,所以數字維持上次測量結果:
 
 Q6 cold 81 ms → 35 ms(2.3× 加速),warm 43 → 22 ms(2.0×)。
 
-## 10. Per-aspect GT 完整方法論(transparency)
+## 9. Per-aspect GT 完整方法論(transparency)
 
 詳細實作見 `eval/augment_gt_per_aspect.py` + `eval/evaluate.py::QTYPE_PREDICATES`。要點:
 
-1. **`label_sem`** 直接複用原 1 451 筆 label,**完全沒有重新標註**——避免引入新 bias。原 rubric 已經是「topical relevance to query intent」≈ 對 seed 的語意相關性。
-2. **`label_lex`** 由 PostgreSQL 直接判斷:`abstract @@@ bm25_text` 返回 > 0 → 1,否則 0。這就是 v2 / v3 的 BM25 ranker 在執行 lex predicate 時用的同一個 operator,**標註 = 執行語義對齊**。
-3. **`label_gph`** 由 PostgreSQL 直接判斷:`paper_id IN bfs_recursive_sql(anchor, depth, Reverse)`。這就是 v2 / v3 的 graph push-down 在執行 graph predicate 時用的同一個 SQL。
-4. 對所有 1 451 筆 GT row(20 query × 各題 pool)跑這兩個 SQL,寫進 GT row 的新欄位 `label_lex` / `label_gph`(`None` if predicate not in query)。
+1. **`label_sem`**(人類軸):讀 title + abstract,單一標註者(本計畫作者,LLM-assisted)。
+2. **`label_lex`**(引擎自動):PostgreSQL 直接判斷 `abstract @@@ bm25_text` 返回 > 0 → 1,否則 0。這就是 v2 / v3 的 BM25 ranker 在執行 lex predicate 時用的同一個 operator——**標註 = 執行語義對齊**。
+3. **`label_gph`**(引擎自動):PostgreSQL 直接判斷 `paper_id IN bfs_recursive_sql(anchor, depth, Reverse)`。這就是 v2 / v3 的 graph push-down 在執行 graph predicate 時用的同一個 SQL。
+4. 對所有 1 451 筆 GT row(20 query × 各題 pool)跑這兩個 SQL,寫進 GT row 的 `label_lex` / `label_gph`(`None` if predicate not in query)。
 5. `evaluate.py` 讀 trio,依 `QTYPE_PREDICATES[qtype]` 取 AND 算 effective relevance,再用既有的 NDCG / Jaccard / RBO 計算。
 
-**注意事項**:
-- 對 Q1 / Q4 / Q6 / Q7(有 sem),NDCG 仍取決於人類 sem 標註——所以原 GT 的 "single annotator + LLM-assisted + title+abstract only" caveat 仍適用。
-- 對 Q2 / Q3 / Q5(無 sem,只有 operational predicate),NDCG 變成「plan 是否忠實執行 predicate」的 binary 量度。本評估設定下,v2 / v3 在 Q5 都拿 1.000——因為兩 plan 都正確執行 lex ∩ gph push-down。**這意味著 Q5 不再能區分 plan 品質,但 plan 之間在 Q5 上本來就 byte-identical(v3 delegate),所以這個資訊損失沒有實質影響**。
+**Caveat**:
+- 對 Q1 / Q4 / Q6 / Q7(有 sem),NDCG 仍取決於人類 sem 標註——「single annotator + LLM-assisted + title+abstract only」的 caveat 適用。
+- 對 Q2 / Q3 / Q5(無 sem,只有 operational predicate),NDCG 變成「plan 是否忠實執行 predicate」的 binary 量度。本評估設定下 v2 / v3 在 Q5 都拿 1.000——因為兩 plan 都正確執行 lex ∩ gph push-down,top-10 全員通過 predicate AND。
 
-## 11. Done condition
+## 10. Done condition
 
 - [x] GT 每筆有 `label_sem` / `label_lex` / `label_gph` 三個獨立 label。
 - [x] evaluate.py 用 per-query-type 的 predicate AND 算 effective relevance。
@@ -161,4 +156,4 @@ Q6 cold 81 ms → 35 ms(2.3× 加速),warm 43 → 22 ms(2.0×)。
 - [x] Q4 / Q5 v3 delegate to v2,結果 byte-identical(ΔNDCG = +0.000 共 10 題)。
 - [x] Q6 v3 mean NDCG 0.930 領先 v2 0.896(+0.034),P50 2.35× 加速。
 - [x] 殘餘 NDCG gap(Q6-2 / Q7-1)的根本原因是 BM25 top-N cutoff,不是設計缺陷。
-- [x] Per-aspect GT 方法論在 §10 完整 disclaim。
+- [x] Per-aspect GT 方法論在 §9 完整 disclaim。

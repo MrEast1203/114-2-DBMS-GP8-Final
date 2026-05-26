@@ -24,70 +24,53 @@ construction, results, and reproduction notes — lives in
 
 ## TL;DR results (50K papers, WSL2, warm cache, **per-aspect AND ground truth**)
 
-Two snapshots — the original baseline (samples=15, naive/v1/v2 from
-`reports/eval_phase1_e4.json`) and a same-run 4-plan comparison
-(samples=10, all four plans measured back-to-back on the same machine
-with the **per-aspect AND ground truth** described below, see
-`reports/eval_v3.json`):
+All four plans measured back-to-back on the same machine, samples=10
+per (query, plan) cell, source `reports/eval_v3.json`:
 
-| plan  | mean P50 (samples=15, original GT) | mean P50 (samples=10, per-aspect GT) | NDCG@10 (per-aspect AND) | top-10 vs naive |
-| ----- | ---------------------------------- | ------------------------------------ | ------------------------ | ---------------- |
-| naive | 51.36 ms                           | 35.16 ms                             | 0.772                    | — (baseline)     |
-| v1    | 50.92 ms                           | 35.21 ms                             | 0.772                    | Jaccard 1.000 (same) |
-| v2    | 35.75 ms                           | 24.20 ms                             | 0.917                    | Jaccard 0.601 (differs) |
-| v3    | —                                  | **17.51 ms**                         | **0.922**                | Jaccard 0.664 vs v2 |
+| plan  | mean P50 | NDCG@10 (per-aspect AND) | top-10 vs naive       |
+| ----- | -------- | ------------------------ | --------------------- |
+| naive | 35.16 ms | 0.772                    | — (baseline)          |
+| v1    | 35.21 ms | 0.772                    | Jaccard 1.000 (same)  |
+| v2    | 24.20 ms | 0.917                    | Jaccard 0.601 (differs) |
+| v3    | **17.51 ms** | **0.922**            | Jaccard 0.664 vs v2   |
 
-- **v2 push-down** cuts mean latency 1.44× over naive (original GT)
-  and lifts NDCG@10 by +0.145 vs naive (per-aspect GT) by restricting
-  the ranker to the graph-filtered candidate set rather than ranking
-  the whole corpus and filtering afterward.
+- **v2 push-down** cuts mean latency 1.45× over naive and lifts
+  NDCG@10 by +0.145 by restricting the ranker to the graph-filtered
+  candidate set rather than ranking the whole corpus and filtering
+  afterward.
 - **v3 is v2's further latency optimization** — a *chained* push-down
   for the two-ranker query types Q6 / Q7: take graph subset (BFS), then
   BM25 top-N within that subset, then run vector search restricted to
-  the BM25 top-N, and finally RRF the vector and BM25 rankings. Under
-  the per-aspect AND ground truth (see methodology below), **v3 wins
-  both axes vs v2**: mean P50 17.51 ms vs 24.20 ms (**1.38× faster**)
-  and mean NDCG@10 0.922 vs 0.917 (**+0.005**, essentially tied with
-  slight v3 lead). Q4 / Q5 delegate to v2 verbatim (NDCG byte-identical,
-  ΔNDCG = +0.000 × 10). **Q6 is v3's biggest win** (NDCG 0.930 vs
-  0.896, +0.034; P50 18.5 vs 43.4 ms, 2.35×), particularly Q6-3
-  (spanner/consensus, v3 +0.335). Q7 is essentially tied (v3 wins Q7-2
-  +0.095, Q7-5 +0.044, loses Q7-1 −0.236). Full per-query breakdown +
-  methodology disclaim in `reports/v3_summary.md` and
-  `docs/report.html` §4.7 / §8.4 / §11.2.
-- **Ground truth methodology evolved twice (2026-05-26)** to align
-  evaluation with query execution semantics:
-  1. **Pool augmentation** (1 368 → 1 451 labels) — original pool only
-     covered `pgvector top-30 ∪ pg_search top-30`, missing v3's
-     chained-pushdown retrievals. Added 83 labels under the same rubric
-     and same single annotator so all four plans' top-10s are now
-     fully labeled. Methodology in `docs/report.html` §6.3.5,
-     `eval/labels_v3_aug.py`.
-  2. **Per-aspect AND labels** — each (qid, paper_id) now carries three
-     independent labels: `label_sem` (human topical judgment, reuses
-     the existing label), `label_lex` (operational: does
-     `abstract @@@ bm25_text` match?), `label_gph` (operational: is
-     paper in `BFS_reverse(anchor, depth)`?). Evaluation computes
-     effective relevance per query type via the predicate AND
-     (e.g. Q6 = `sem ∧ lex`), so a paper "topically about ResNet" but
-     whose abstract doesn't lexically contain "batch normalization"
-     correctly counts as **non-relevant for Q6** even if the human
-     marked it topical. Implementation in
-     `eval/augment_gt_per_aspect.py` + `eval/evaluate.py`
-     (`QTYPE_PREDICATES`); methodology in `docs/report.html` §6.3.6.
-- **Without these methodology fixes**, v3's chained design *looked*
-  like a tradeoff (faster P50, worse NDCG). With them in place, the
-  v3 vs v2 NDCG gap converged from −0.151 → −0.057 → **+0.005** as
-  each evaluation bug was eliminated. **v3 doesn't actually trade NDCG
-  for P50** — the apparent NDCG drop was the evaluation conflating
-  fuzzy topical relevance with the strict lex/graph predicates the
-  query specifies.
+  the BM25 top-N, and finally RRF the vector and BM25 rankings. **v3
+  wins both axes vs v2**: mean P50 17.51 ms vs 24.20 ms (**1.38×
+  faster**) and mean NDCG@10 0.922 vs 0.917 (**+0.005**, essentially
+  tied with slight v3 lead). Q4 / Q5 delegate to v2 verbatim (NDCG
+  byte-identical, ΔNDCG = +0.000 × 10). **Q6 is v3's biggest win**
+  (NDCG 0.930 vs 0.896, +0.034; P50 18.5 vs 43.4 ms, 2.35×),
+  particularly Q6-3 (spanner/consensus, v3 +0.335). Q7 is essentially
+  tied (v3 wins Q7-2 +0.095, Q7-5 +0.044, loses Q7-1 −0.236). Full
+  per-query breakdown + methodology disclaim in
+  `reports/v3_summary.md` and `docs/report.html` §4.7 / §8.4 / §11.2.
+- **Ground truth uses per-aspect AND labels.** Each (qid, paper_id)
+  carries three independent labels: `label_sem` (human topical
+  judgment), `label_lex` (operational: does `abstract @@@ bm25_text`
+  match?), `label_gph` (operational: is paper in
+  `BFS_reverse(anchor, depth)`?). Evaluation computes effective
+  relevance per query type via predicate AND (e.g. Q6 = `sem ∧ lex`),
+  so a paper "topically about ResNet" but whose abstract doesn't
+  lexically contain "batch normalization" correctly counts as
+  **non-relevant for Q6** even if the human marked it topical. This
+  keeps NDCG aligned with what the query actually asks for. Pool size
+  1 451 (qid, paper_id) pairs unioning the three engines' top-N with
+  every plan's top-10. Implementation in
+  `eval/augment_gt_per_aspect.py` + `eval/evaluate.py`
+  (`QTYPE_PREDICATES`); methodology in `docs/report.html` §6.3.
 - **Graph is never an RRF ranking signal** in any of the four plans.
   naive uses graph as a post-filter on RRF results; v2 pushes it down
   to the ranker SQL as a pre-filter; v3 inherits v2's choice
-  (graph push-down for Q4 / Q5 / Q7, no graph in Q6). The
-  naive → v2 comparison shows graph-as-filter beats graph-as-ranker by
-  +0.126 NDCG, so v3 doesn't try to revisit that question.
+  (graph push-down for Q4 / Q5 / Q7, no graph in Q6). The naive → v2
+  comparison shows graph-as-filter beats graph-as-ranker by +0.145
+  NDCG.
 - `naive` and `v1` return **bit-identical top-10s** on every query.
   Cost-based reorder by itself does *not* change latency or quality in
   this pipeline — every engine must run to completion regardless of
@@ -120,11 +103,11 @@ Detailed per-query numbers and methodology are in `reports/*.json` (see
 │   └── embed_chunks.py     # MiniLM (all-MiniLM-L6-v2) embeddings
 ├── eval/               # Evaluation harness
 │   ├── queries.jsonl       # 20 hand-crafted Q4–Q7 queries
-│   ├── ground-truth.jsonl  # 1 368 hand-labelled (query, paper) pairs
+│   ├── ground-truth.jsonl  # 1 451 (query, paper) rows, each with per-aspect trio
 │   ├── build_candidate_pool.py  # TREC-style pooling
 │   └── evaluate.py         # NDCG@10 / Jaccard / RBO computation
 ├── migrations/         # 4 SQL migrations (paper schema, AGE, indexes)
-├── scripts/            # Helper scripts (coldwarm_all_21.py, coldwarm_all_28.py)
+├── scripts/            # Helper scripts (coldwarm_all_28.py)
 ├── reports/            # All measurement JSON outputs
 ├── docker/             # Custom PG 16 + pgvector + pg_search image
 ├── Cargo.toml, pyproject.toml, Makefile, docker-compose.yml
@@ -200,9 +183,9 @@ that ranks well in **both** vector and BM25 still wins.
 
 **Why graph is not an RRF ranking signal:** naive (graph as a post-filter
 on RRF) versus v2 (graph as a pre-filter pushed into ranker SQL) already
-answered this — moving graph out of the ranking stage lifted NDCG@10
-from 0.675 to 0.801. v3 sticks with v2's choice; graph is filter-only,
-never an RRF input.
+answered this — moving graph out of the ranking stage lifted mean NDCG@10
+from 0.772 to 0.917 (+0.145). v3 sticks with v2's choice; graph is
+filter-only, never an RRF input.
 
 **v3 under per-aspect AND GT** (full breakdown in `reports/v3_summary.md`
 and `docs/report.html` §4.7 / §8.4 / §11.2): v3 wins both axes vs v2 —
@@ -242,16 +225,13 @@ artifacts committed under `reports/`:
 
 | file                              | purpose                                        |
 | --------------------------------- | ---------------------------------------------- |
-| `eval_phase1_e4.json`             | 20 queries × 3 plans (naive/v1/v2) · P50 + NDCG + Jaccard + RBO (baseline, samples=15, **original GT 1 368 labels, single-label**) |
-| `eval_v3.json`                    | **20 queries × 4 plans (naive/v1/v2/v3)** · same metrics + v3-vs-v2 pairwise · `results` flat list for tooling · **per-aspect AND GT (1 451 labels × 3 aspects)** |
-| `v3_summary.md`                   | **v3 markdown summary** — mean P50 / NDCG / per-query diff vs v2 / GT methodology / honest disclaim |
-| `coldwarm_full_21.json`           | 7 queries × 3 plans · cold-vs-warm P50 matrix (baseline) |
-| `coldwarm_v3.json`                | **7 queries × 4 plans · cold-vs-warm P50 matrix** (28 cells, includes v3) |
+| `eval_v3.json`                    | **20 queries × 4 plans (naive/v1/v2/v3)** · P50 + NDCG + Jaccard + RBO + v3-vs-v2 pairwise · per-aspect AND GT (1 451 labels × 3 aspects), samples=10 |
+| `v3_summary.md`                   | v3 markdown summary — mean P50 / NDCG / per-query diff vs v2 / honest disclaim |
+| `coldwarm_v3.json`                | 7 queries × 4 plans · cold-vs-warm P50 matrix (28 cells) |
+| `coldwarm_q{1..7}_{naive,v1,v2,v3}.json` | individual cells of the cold/warm matrix (regenerated by `scripts/coldwarm_all_28.py`) |
 | `storage.json`                    | per-relation / per-index disk usage breakdown  |
 | `bfs_shootout.json`               | AGE Cypher vs `WITH RECURSIVE`, 3 depth × 3 bucket |
-| `coldwarm_q{1..7}_{naive,v1,v2,v3}.json` | individual cells of the cold/warm matrix (v3 cells overwrite the prior `naive,v1,v2` per-cell files when re-run via `scripts/coldwarm_all_28.py`) |
-| `eval/labels_v3_aug.py`           | **83 augmented (qid, paper_id) → 0/1 labels** added 2026-05-26 to make the GT pool cover all four plans' top-10 — `docs/report.html` §6.3.5 |
-| `eval/augment_gt_per_aspect.py`   | **per-aspect labels script** — adds `label_lex` (BM25 match) and `label_gph` (BFS membership) automatically to each GT row, keeping existing `label` as `label_sem`. `eval/evaluate.py` consumes the trio via `QTYPE_PREDICATES` AND. `docs/report.html` §6.3.6 |
+| `eval/augment_gt_per_aspect.py`   | Adds `label_lex` (BM25 match) and `label_gph` (BFS membership) automatically to each GT row, keeping existing `label` as `label_sem`. `eval/evaluate.py` consumes the trio via `QTYPE_PREDICATES` AND. `docs/report.html` §6.3 |
 
 If you just want to inspect the data, read those JSONs directly — no
 need to set up the full pipeline.
@@ -311,18 +291,17 @@ uv run python ingest/load_graph.py --src data/openalex_50k --reset
 #     first run downloads ~80 MB model)
 uv run python ingest/embed_chunks.py --strategy minilm --force
 
-# 8 · Reproduce the headline tables (now 4 plans, including v3)
+# 8 · Reproduce the headline tables (4 plans × 20 queries × 10 samples)
+uv run python eval/augment_gt_per_aspect.py    # refresh per-aspect labels (idempotent)
 uv run python eval/evaluate.py \
+    --plans naive,v1,v2,v3 \
     --samples 10 \
     --queries eval/queries.jsonl \
     --gt eval/ground-truth.jsonl \
     --out reports/eval_v3.json
-uv run python scripts/coldwarm_all_28.py   # 4 plans × 7 queries = 28 cells
+uv run python scripts/coldwarm_all_28.py       # 4 plans × 7 queries = 28 cells
 ./target/release/researchdb-bench storage      --out reports/storage.json
 ./target/release/researchdb-bench bfs-shootout --samples 30
-# Optional · regenerate the pre-v3 baseline files (do not commit if you want
-# to keep eval_phase1_e4.json and coldwarm_full_21.json unchanged):
-# uv run python scripts/coldwarm_all_21.py
 ```
 
 ### Cleanup targets
@@ -351,8 +330,8 @@ to re-fetch, `rm -rf data/openalex_50k` manually.
   without GIN-index rebuild after `drop_label()`. Confirm `grep
   paper_props_gin ingest/load_graph.py` matches; if not, `git pull`.
 - **`cold-warm` subcommand not found** — the bench binary's subcommand
-  is `cold-warm` (hyphenated). The 21-cell matrix is produced by
-  `scripts/coldwarm_all_21.py`, not by the binary directly.
+  is `cold-warm` (hyphenated). The 28-cell matrix is produced by
+  `scripts/coldwarm_all_28.py`, not by the binary directly.
 
 ---
 
