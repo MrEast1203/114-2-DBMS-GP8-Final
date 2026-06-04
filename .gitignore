@@ -20,6 +20,9 @@ logs/
 # HTML report artifacts kept for the author's own viewing — not published
 *.html
 
+# Exception: the interactive web GUI is version-controlled and meant to be shared
+!web/index.html
+
 # Exception: eval/ holds version-controlled ground truth + query specs
 !eval/*.jsonl
 
