@@ -148,9 +148,9 @@
 <body>
 <div class="wrap">
   <header class="top">
-    <div class="eyebrow">NTU 114-2 DBMS · Group 8 · Live Orchestrator Console</div>
-    <h1>Hybrid Search on PostgreSQL — 親手跑跑看</h1>
-    <p class="lead">輸入查詢、選一個計畫(naive / v1 / v2 / v3),按 Run。後端用<strong>同一份 Rust 編排器</strong>真的打進資料庫,回傳 top-K 論文、延遲,以及這個計畫實際怎麼編排三個引擎(執行順序、graph push-down、各引擎候選數)。</p>
+    <div class="eyebrow">ResearchDB · Hybrid Search</div>
+    <h1>三路混合論文搜尋</h1>
+    <p class="lead">語義向量、精準比對與引用圖三路融合,跨 36,740 篇論文檢索。可即時比較不同查詢計畫的延遲。</p>
     <div class="topmeta">
       <span><span class="dot" style="background:var(--sem)"></span>pgvector · 語義</span>
       <span><span class="dot" style="background:var(--lex)"></span>pg_search · 精準</span>
@@ -165,8 +165,8 @@
       <div class="qgrid" id="qgrid"></div>
       <div class="qdesc" id="qdesc"></div>
 
-      <div class="ptitle">② 範例(一鍵帶入)</div>
-      <select id="presetSel"><option value="">— 選一個 eval 範例 —</option></select>
+      <div class="ptitle">② 查詢來源</div>
+      <select id="presetSel"><option value="">✎ 自訂查詢(自行輸入下方參數)</option></select>
 
       <div class="ptitle">③ 參數</div>
       <label class="fld" id="f-seed"><span class="lab">seed_chunk <span class="hint">語義錨點 chunk id</span></span><input type="number" id="seed_chunk" value="1" min="1"></label>
@@ -219,7 +219,7 @@ for(let q=1;q<=7;q++){
     <i class="${e[0]?'a':''}" style="background:var(--sem)"></i>
     <i class="${e[1]?'a':''}" style="background:var(--lex)"></i>
     <i class="${e[2]?'a':''}" style="background:var(--gph)"></i></div>`;
-  c.onclick=()=>selQ(q);
+  c.onclick=()=>{ $("#presetSel").value=""; selQ(q); };   // manual pick → custom mode
   qg.appendChild(c);
 }
 function selQ(q){
@@ -235,30 +235,40 @@ function selQ(q){
 
 // ---- build plan chips ----
 const pr=$("#planrow");
+function paintPlanChips(){
+  const all=$("#cmpAll").checked;   // compare mode → every plan is selected
+  document.querySelectorAll(".planchip").forEach(x=>x.classList.toggle("on", all || x.dataset.p===curPlan));
+}
 PLANS.forEach(p=>{
   const c=document.createElement("div");c.className="planchip";c.dataset.p=p;c.style.setProperty("--pc",PC[p]);
   c.textContent=p;c.title=PLANTAG[p];
-  c.onclick=()=>{curPlan=p;document.querySelectorAll(".planchip").forEach(x=>x.classList.toggle("on",x.dataset.p===p));};
+  c.onclick=()=>{ $("#cmpAll").checked=false; curPlan=p; paintPlanChips(); };
   pr.appendChild(c);
 });
+$("#cmpAll").addEventListener("change", paintPlanChips);
 
 // ---- presets ----
 let PRESETS=[];
 fetch("/presets").then(r=>r.json()).then(d=>{
   if(!d.ok)return; PRESETS=d.presets;
-  const sel=$("#presetSel");
+  const og=document.createElement("optgroup"); og.label="eval 範例(一鍵帶入)";
   d.presets.forEach((p,i)=>{
-    const o=document.createElement("option");o.value=i;o.textContent=`${p.qid} · ${p.desc}`;sel.appendChild(o);
+    const o=document.createElement("option");o.value=i;o.textContent=`${p.qid} · ${p.desc}`;og.appendChild(o);
   });
+  $("#presetSel").appendChild(og);
 }).catch(()=>{});
 $("#presetSel").onchange=e=>{
-  const p=PRESETS[e.target.value]; if(!p)return;
+  const p=PRESETS[e.target.value]; if(!p)return;   // "" = 自訂,維持現有輸入
   selQ(p.qtype);
   if(p.seed_chunk!=null)$("#seed_chunk").value=p.seed_chunk;
   if(p.anchor_paper!=null)$("#anchor_paper").value=p.anchor_paper;
   if(p.depth!=null)$("#depth").value=p.depth;
   $("#bm25_text").value=p.bm25_text||"";
 };
+// hand-editing any field drops back to custom mode
+["seed_chunk","bm25_text","anchor_paper","depth","k","ef_search"].forEach(id=>{
+  const el=$("#"+id); if(el)el.addEventListener("input",()=>{ $("#presetSel").value=""; });
+});
 
 // ---- gather form ----
 function form(){
@@ -396,7 +406,7 @@ function esc(s){return(s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"
 function trunc(s,n){s=s||"";return s.length>n?s.slice(0,n-1)+"…":s;}
 
 // init
-selQ(6); curPlan="v3"; document.querySelector('.planchip[data-p="v3"]').classList.add("on");
+selQ(6); curPlan="v3"; paintPlanChips();
 $("#bm25_text").value="batch normalization"; $("#seed_chunk").value=1; $("#anchor_paper").value=1;
 </script>
 </body>
