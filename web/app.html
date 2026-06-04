@@ -66,6 +66,9 @@
   input:focus,select:focus{outline:none;border-color:var(--accent)}
   .twin{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .hidden{display:none!important}
+  /* fields not used by the current query type: still fully editable, just a quieter label */
+  .fld.unused .lab{opacity:.45}
+  .fld.unused .lab .hint::after{content:" · 此類型未使用"}
   .adv{margin-top:14px}
   .adv summary{font-family:var(--fm);font-size:11px;color:var(--ink-3);cursor:pointer;letter-spacing:.06em}
 
@@ -172,7 +175,7 @@
       <label class="fld" id="f-seed"><span class="lab">seed_chunk <span class="hint">語義錨點 chunk id</span></span><input type="number" id="seed_chunk" value="1" min="1"></label>
       <label class="fld" id="f-bm25"><span class="lab">bm25_text <span class="hint">精準關鍵詞</span></span><input type="text" id="bm25_text" placeholder="batch normalization"></label>
       <div class="twin">
-        <label class="fld" id="f-anchor"><span class="lab">anchor_paper</span><input type="number" id="anchor_paper" value="1" min="1"></label>
+        <label class="fld" id="f-anchor"><span class="lab">anchor_paper <span class="hint">圖錨點 paper id</span></span><input type="number" id="anchor_paper" value="1" min="1"></label>
         <label class="fld" id="f-depth"><span class="lab">depth <span class="hint">1–3</span></span><input type="number" id="depth" value="2" min="1" max="3"></label>
       </div>
 
@@ -226,11 +229,14 @@ function selQ(q){
   curQ=q;
   document.querySelectorAll(".qchip").forEach(c=>c.classList.toggle("on",+c.dataset.q===q));
   $("#qdesc").textContent=`Q${q} · ${QLABEL[q]} — ${QHINT[q]}`;
+  // All parameter fields stay open for free editing; the query type only
+  // decides which engines run (and therefore which fields actually get
+  // used). Fields not used by this type are marked, not hidden.
   const e=ENG[q];
-  $("#f-seed").classList.toggle("hidden",!e[0]);
-  $("#f-bm25").classList.toggle("hidden",!e[1]);
-  $("#f-anchor").classList.toggle("hidden",!e[2]);
-  $("#f-depth").classList.toggle("hidden",!e[2]);
+  $("#f-seed").classList.toggle("unused",!e[0]);
+  $("#f-bm25").classList.toggle("unused",!e[1]);
+  $("#f-anchor").classList.toggle("unused",!e[2]);
+  $("#f-depth").classList.toggle("unused",!e[2]);
 }
 
 // ---- build plan chips ----
