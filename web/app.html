@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hybrid Search · Live Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400..700;1,400..600&family=Noto+Serif+TC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#FAF7F1; --paper-2:#F1ECE0; --paper-3:#E8E1CD;
+    --ink:#1B1916; --ink-2:#38332C; --ink-3:#6A6258;
+    --rule:#C7BFAE; --rule-soft:#DED5C0;
+    --accent:#6B2020; --gold:#8A6F35; --leaf:#4E6B3F; --slate:#4A5560;
+    --surface-dark:#1C1814; --code-text:#E6DCC6;
+    --sem:#4A5560; --lex:#8A6F35; --gph:#4E6B3F;
+    --c-naive:#9A8F7C; --c-v1:#4A5560; --c-v2:#8A6F35; --c-v3:#6B2020;
+    --fb:"EB Garamond","Noto Serif TC",Georgia,serif;
+    --fm:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--paper);color:var(--ink);font-family:var(--fb);font-size:16px;line-height:1.6;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  .wrap{max-width:1180px;margin:0 auto;padding:34px 32px 80px}
+  a{color:var(--accent)}
+
+  header.top{border-bottom:1px solid var(--rule);padding-bottom:20px;margin-bottom:26px}
+  .eyebrow{font-family:var(--fm);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);margin-bottom:8px}
+  h1{font-size:33px;font-weight:500;letter-spacing:-.015em;line-height:1.1}
+  .lead{font-style:italic;color:var(--ink-2);margin-top:8px;max-width:760px}
+  .topmeta{margin-top:12px;font-family:var(--fm);font-size:11px;color:var(--ink-3);letter-spacing:.04em;display:flex;gap:20px;flex-wrap:wrap}
+  .topmeta a{text-decoration:none}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:0px;margin-right:5px}
+
+  .grid{display:grid;grid-template-columns:380px 1fr;gap:26px;align-items:start}
+  @media(max-width:920px){.grid{grid-template-columns:1fr}}
+
+  /* ---- builder panel ---- */
+  .panel{border:1px solid var(--rule-soft);background:var(--paper-2);padding:20px 22px}
+  .panel.sticky{position:sticky;top:18px}
+  .ptitle{font-family:var(--fm);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-3);margin-bottom:12px}
+  .ptitle:not(:first-child){margin-top:22px}
+
+  .qgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+  .qchip{border:1px solid var(--rule);background:var(--paper);padding:8px 4px 7px;cursor:pointer;text-align:center;transition:all .15s;border-radius:2px}
+  .qchip:hover{border-color:var(--ink-3)}
+  .qchip.on{border-color:var(--accent);background:rgba(107,32,32,.06);box-shadow:inset 0 -2px 0 var(--accent)}
+  .qchip .qn{font-family:var(--fm);font-size:12px;font-weight:600;color:var(--ink)}
+  .qchip .qe{margin-top:4px;display:flex;gap:3px;justify-content:center}
+  .qchip .qe i{width:7px;height:7px;border-radius:50%;display:inline-block;opacity:.28}
+  .qchip .qe i.a{opacity:1}
+  .qdesc{font-size:13px;color:var(--ink-3);margin-top:9px;min-height:18px;font-style:italic}
+
+  .planrow{display:flex;gap:6px;flex-wrap:wrap}
+  .planchip{flex:1;min-width:62px;border:1px solid var(--rule);background:var(--paper);padding:9px 6px;cursor:pointer;text-align:center;font-family:var(--fm);font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);border-radius:2px;transition:all .15s}
+  .planchip:hover{border-color:var(--ink-3)}
+  .planchip.on{color:#fff;border-color:var(--pc);background:var(--pc)}
+  .cmpline{margin-top:8px;display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--ink-2);cursor:pointer;user-select:none}
+  .cmpline input{accent-color:var(--accent);width:15px;height:15px}
+
+  label.fld{display:block;margin-top:12px}
+  label.fld .lab{font-family:var(--fm);font-size:11px;color:var(--ink-3);letter-spacing:.04em;display:flex;justify-content:space-between;margin-bottom:4px}
+  label.fld .lab .hint{color:var(--ink-3);opacity:.7;font-style:normal}
+  input[type=text],input[type=number],select{width:100%;font-family:var(--fm);font-size:13px;padding:8px 10px;border:1px solid var(--rule);background:var(--paper);color:var(--ink);border-radius:2px}
+  input:focus,select:focus{outline:none;border-color:var(--accent)}
+  .twin{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .hidden{display:none!important}
+  .adv{margin-top:14px}
+  .adv summary{font-family:var(--fm);font-size:11px;color:var(--ink-3);cursor:pointer;letter-spacing:.06em}
+
+  .runbtn{margin-top:20px;width:100%;padding:13px;border:none;background:var(--accent);color:var(--paper);font-family:var(--fm);font-size:13px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;cursor:pointer;border-radius:2px;transition:background .15s}
+  .runbtn:hover{background:#561919}
+  .runbtn:disabled{opacity:.55;cursor:wait}
+
+  /* ---- results ---- */
+  #out{min-height:200px}
+  .placeholder{border:1px dashed var(--rule);padding:42px 28px;text-align:center;color:var(--ink-3);font-style:italic}
+  .banner{padding:14px 18px;border-left:3px solid var(--accent);background:rgba(107,32,32,.06);font-size:14px;color:var(--ink-2);margin-bottom:18px}
+  .banner b{color:var(--accent)}
+
+  .resultcard{border:1px solid var(--rule-soft);background:var(--paper-2);padding:0;margin-bottom:18px}
+  .rc-head{padding:16px 20px;border-bottom:1px solid var(--rule-soft);display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .rc-head .qbadge{font-family:var(--fm);font-size:12px;font-weight:600;color:#fff;background:var(--accent);padding:3px 10px;border-radius:2px}
+  .rc-head .planbadge{font-family:var(--fm);font-size:12px;font-weight:600;padding:3px 10px;border:1px solid var(--pc);color:var(--pc);border-radius:2px}
+  .rc-head .qd{font-size:14px;color:var(--ink-2);font-style:italic}
+  .timing{margin-left:auto;display:flex;gap:16px}
+  .timing .t{text-align:right}
+  .timing .t .v{font-family:var(--fm);font-size:19px;font-weight:600;color:var(--ink);font-feature-settings:"tnum"}
+  .timing .t .v .u{font-size:11px;color:var(--ink-3);margin-left:2px}
+  .timing .t .l{font-family:var(--fm);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+
+  .rc-body{display:grid;grid-template-columns:300px 1fr;gap:0}
+  @media(max-width:780px){.rc-body{grid-template-columns:1fr}}
+  .orch{padding:16px 20px;border-right:1px solid var(--rule-soft);background:rgba(0,0,0,.012)}
+  @media(max-width:780px){.orch{border-right:none;border-bottom:1px solid var(--rule-soft)}}
+  .orch h4{font-family:var(--fm);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin:0 0 8px}
+  .orch h4:not(:first-child){margin-top:18px}
+  .pipe{display:flex;flex-direction:column;gap:5px}
+  .pstep{display:flex;align-items:center;gap:8px;font-family:var(--fm);font-size:11.5px;color:var(--ink-2);background:var(--paper);border:1px solid var(--rule-soft);padding:6px 9px;border-radius:2px}
+  .pstep .n{width:16px;height:16px;border-radius:50%;background:var(--ink-3);color:#fff;font-size:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .pstep.first .n{background:var(--accent)}
+  .parrow{color:var(--ink-3);font-size:10px;text-align:center;line-height:.3}
+  .flags{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+  .flag{font-family:var(--fm);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:2px 8px;border:1px solid;border-radius:2px}
+  .flag.pd{color:var(--accent);border-color:var(--accent);background:rgba(107,32,32,.07)}
+  .flag.mut{color:var(--gold);border-color:var(--gold);background:rgba(138,111,53,.07)}
+  .flag.rt{color:var(--ink-3);border-color:var(--rule)}
+  .erows{display:flex;flex-direction:column;gap:7px;margin-top:2px}
+  .erow .el{display:flex;justify-content:space-between;font-family:var(--fm);font-size:11px;color:var(--ink-2);margin-bottom:2px}
+  .erow .track{height:7px;background:var(--paper-3);border-radius:3px;overflow:hidden}
+  .erow .fill{height:100%;border-radius:3px;transition:width .6s cubic-bezier(.2,.7,.2,1)}
+
+  .hits{padding:8px 0}
+  .hit{display:flex;gap:12px;padding:9px 20px;border-bottom:1px solid var(--rule-soft)}
+  .hit:last-child{border-bottom:none}
+  .hit .rk{font-family:var(--fm);font-size:13px;color:var(--accent);font-weight:600;width:26px;flex-shrink:0;text-align:right}
+  .hit .meta{flex:1}
+  .hit .ti{font-size:15px;color:var(--ink);line-height:1.35}
+  .hit .sub{font-family:var(--fm);font-size:11px;color:var(--ink-3);margin-top:2px}
+  .hit .sub .sep{margin:0 7px;opacity:.5}
+  .empty{padding:24px 20px;color:var(--ink-3);font-style:italic}
+
+  /* ---- compare ---- */
+  .cmpwrap{border:1px solid var(--rule-soft);background:var(--paper-2);margin-bottom:18px}
+  .cmpwrap .ch{padding:14px 20px;border-bottom:1px solid var(--rule-soft);display:flex;align-items:baseline;gap:12px}
+  .cmpwrap .ch .t{font-size:18px;font-weight:600}
+  .cmpwrap .ch .d{font-size:14px;color:var(--ink-3);font-style:italic}
+  .latbars{padding:18px 20px;display:grid;grid-template-columns:1fr;gap:11px}
+  .lb{display:grid;grid-template-columns:48px 1fr 96px;align-items:center;gap:12px}
+  .lb .pn{font-family:var(--fm);font-size:12px;font-weight:600;text-transform:uppercase;color:var(--pc)}
+  .lb .track{height:22px;background:var(--paper-3);border-radius:2px;overflow:hidden;position:relative}
+  .lb .fill{height:100%;background:var(--pc);border-radius:2px;transition:width .7s cubic-bezier(.2,.7,.2,1)}
+  .lb .val{font-family:var(--fm);font-size:13px;text-align:right;color:var(--ink-2);font-feature-settings:"tnum"}
+  .lb .val b{color:var(--ink);font-size:14px}
+  .cmptbl{width:100%;border-collapse:collapse;font-size:13px}
+  .cmptbl th{font-family:var(--fm);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#fff;background:var(--ink);padding:8px 10px;text-align:left;font-weight:500}
+  .cmptbl th.pc-h{color:var(--pc)}
+  .cmptbl td{padding:7px 10px;border-top:1px solid var(--rule-soft);vertical-align:top;font-size:13px;line-height:1.35}
+  .cmptbl td.rk{font-family:var(--fm);color:var(--accent);text-align:right;width:30px}
+  .cmptbl td .pid{font-family:var(--fm);font-size:10px;color:var(--ink-3)}
+  .cmptbl tr:nth-child(even) td{background:rgba(0,0,0,.012)}
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid var(--rule);border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:7px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .note{font-size:12.5px;color:var(--ink-3);padding:0 20px 16px;font-style:italic}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="eyebrow">NTU 114-2 DBMS · Group 8 · Live Orchestrator Console</div>
+    <h1>Hybrid Search on PostgreSQL — 親手跑跑看</h1>
+    <p class="lead">輸入查詢、選一個計畫(naive / v1 / v2 / v3),按 Run。後端用<strong>同一份 Rust 編排器</strong>真的打進資料庫,回傳 top-K 論文、延遲,以及這個計畫實際怎麼編排三個引擎(執行順序、graph push-down、各引擎候選數)。</p>
+    <div class="topmeta">
+      <span><span class="dot" style="background:var(--sem)"></span>pgvector · 語義</span>
+      <span><span class="dot" style="background:var(--lex)"></span>pg_search · 精準</span>
+      <span><span class="dot" style="background:var(--gph)"></span>WITH RECURSIVE · 圖</span>
+    </div>
+  </header>
+
+  <div class="grid">
+    <!-- ===== builder ===== -->
+    <div class="panel sticky">
+      <div class="ptitle">① 查詢類型</div>
+      <div class="qgrid" id="qgrid"></div>
+      <div class="qdesc" id="qdesc"></div>
+
+      <div class="ptitle">② 範例(一鍵帶入)</div>
+      <select id="presetSel"><option value="">— 選一個 eval 範例 —</option></select>
+
+      <div class="ptitle">③ 參數</div>
+      <label class="fld" id="f-seed"><span class="lab">seed_chunk <span class="hint">語義錨點 chunk id</span></span><input type="number" id="seed_chunk" value="1" min="1"></label>
+      <label class="fld" id="f-bm25"><span class="lab">bm25_text <span class="hint">精準關鍵詞</span></span><input type="text" id="bm25_text" placeholder="batch normalization"></label>
+      <div class="twin">
+        <label class="fld" id="f-anchor"><span class="lab">anchor_paper</span><input type="number" id="anchor_paper" value="1" min="1"></label>
+        <label class="fld" id="f-depth"><span class="lab">depth <span class="hint">1–3</span></span><input type="number" id="depth" value="2" min="1" max="3"></label>
+      </div>
+
+      <div class="ptitle">④ 計畫</div>
+      <div class="planrow" id="planrow"></div>
+      <label class="cmpline"><input type="checkbox" id="cmpAll">並排比較全部四個計畫</label>
+
+      <details class="adv">
+        <summary>進階</summary>
+        <div class="twin" style="margin-top:10px">
+          <label class="fld" style="margin-top:0"><span class="lab">top-K</span><input type="number" id="k" value="10" min="1" max="50"></label>
+          <label class="fld" style="margin-top:0"><span class="lab">ef_search</span><input type="number" id="ef_search" value="40" min="10" max="400"></label>
+        </div>
+        <label class="fld"><span class="lab">samples <span class="hint">取 P50</span></span><input type="number" id="samples" value="5" min="1" max="25"></label>
+      </details>
+
+      <button class="runbtn" id="runbtn">▶ Run</button>
+    </div>
+
+    <!-- ===== output ===== -->
+    <div id="out">
+      <div class="placeholder">選個範例或輸入參數,按 <b>Run</b> 看編排器實際跑出來的結果。</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const ENG={1:[1,0,0],2:[0,1,0],3:[0,0,1],4:[1,0,1],5:[0,1,1],6:[1,1,0],7:[1,1,1]};
+const QLABEL={1:"語義",2:"精準",3:"圖 BFS",4:"語義 ∩ 圖",5:"精準 ∩ 圖",6:"語義 ∩ 精準",7:"三者都要"};
+const QHINT={1:"找語義相近的論文",2:"abstract 命中關鍵詞",3:"引用網路可達",4:"主題相近且有引用",5:"提到關鍵詞且有引用",6:"主題相近且提到關鍵詞",7:"語義+精準+圖"};
+const PLANS=["naive","v1","v2","v3"];
+const PLANTAG={naive:"固定順序",v1:"cost 重排",v2:"graph push-down",v3:"chained push-down"};
+const PC={naive:"var(--c-naive)",v1:"var(--c-v1)",v2:"var(--c-v2)",v3:"var(--c-v3)"};
+const ECOLOR=["var(--sem)","var(--lex)","var(--gph)"];
+let curQ=6, curPlan="v3";
+
+// ---- build query chips ----
+const qg=$("#qgrid");
+for(let q=1;q<=7;q++){
+  const e=ENG[q];
+  const c=document.createElement("div");c.className="qchip";c.dataset.q=q;
+  c.innerHTML=`<div class="qn">Q${q}</div><div class="qe">
+    <i class="${e[0]?'a':''}" style="background:var(--sem)"></i>
+    <i class="${e[1]?'a':''}" style="background:var(--lex)"></i>
+    <i class="${e[2]?'a':''}" style="background:var(--gph)"></i></div>`;
+  c.onclick=()=>selQ(q);
+  qg.appendChild(c);
+}
+function selQ(q){
+  curQ=q;
+  document.querySelectorAll(".qchip").forEach(c=>c.classList.toggle("on",+c.dataset.q===q));
+  $("#qdesc").textContent=`Q${q} · ${QLABEL[q]} — ${QHINT[q]}`;
+  const e=ENG[q];
+  $("#f-seed").classList.toggle("hidden",!e[0]);
+  $("#f-bm25").classList.toggle("hidden",!e[1]);
+  $("#f-anchor").classList.toggle("hidden",!e[2]);
+  $("#f-depth").classList.toggle("hidden",!e[2]);
+}
+
+// ---- build plan chips ----
+const pr=$("#planrow");
+PLANS.forEach(p=>{
+  const c=document.createElement("div");c.className="planchip";c.dataset.p=p;c.style.setProperty("--pc",PC[p]);
+  c.textContent=p;c.title=PLANTAG[p];
+  c.onclick=()=>{curPlan=p;document.querySelectorAll(".planchip").forEach(x=>x.classList.toggle("on",x.dataset.p===p));};
+  pr.appendChild(c);
+});
+
+// ---- presets ----
+let PRESETS=[];
+fetch("/presets").then(r=>r.json()).then(d=>{
+  if(!d.ok)return; PRESETS=d.presets;
+  const sel=$("#presetSel");
+  d.presets.forEach((p,i)=>{
+    const o=document.createElement("option");o.value=i;o.textContent=`${p.qid} · ${p.desc}`;sel.appendChild(o);
+  });
+}).catch(()=>{});
+$("#presetSel").onchange=e=>{
+  const p=PRESETS[e.target.value]; if(!p)return;
+  selQ(p.qtype);
+  if(p.seed_chunk!=null)$("#seed_chunk").value=p.seed_chunk;
+  if(p.anchor_paper!=null)$("#anchor_paper").value=p.anchor_paper;
+  if(p.depth!=null)$("#depth").value=p.depth;
+  $("#bm25_text").value=p.bm25_text||"";
+};
+
+// ---- gather form ----
+function form(){
+  return {
+    query:curQ, k:+$("#k").value, depth:+$("#depth").value, ef_search:+$("#ef_search").value,
+    seed_chunk:+$("#seed_chunk").value, anchor_paper:+$("#anchor_paper").value,
+    bm25_text:$("#bm25_text").value, samples:+$("#samples").value
+  };
+}
+async function search(plan){
+  const body=Object.assign({plan},form());
+  const r=await fetch("/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  return r.json();
+}
+
+// ---- run ----
+$("#runbtn").onclick=run;
+async function run(){
+  const btn=$("#runbtn");btn.disabled=true;
+  const cmp=$("#cmpAll").checked;
+  $("#out").innerHTML=`<div class="placeholder"><span class="spin"></span>跑編排器中…</div>`;
+  try{
+    if(cmp){
+      const res=await Promise.all(PLANS.map(search));
+      renderCompare(res);
+    }else{
+      const res=await search(curPlan);
+      renderSingle(res);
+    }
+  }catch(err){
+    $("#out").innerHTML=`<div class="banner"><b>連不到後端。</b> 確認你用 <code>researchdb-bench serve</code> 啟動、資料庫已 <code>make up</code> 且語料已載入。<br>${err}</div>`;
+  }
+  btn.disabled=false;
+}
+
+function errBanner(res){
+  return `<div class="banner"><b>查詢失敗:</b> ${res.error||"未知錯誤"}<br>
+    <span style="font-size:12.5px">常見原因:資料庫未啟動 / 語料尚未載入 / 該 paper_id 或 chunk_id 不存在。</span></div>`;
+}
+
+function engDot(label){const c=label.includes("pgvector")?"var(--sem)":label.includes("pg_search")?"var(--lex)":"var(--gph)";
+  return `<span class="dot" style="background:${c}"></span>`;}
+
+function renderSingle(res){
+  if(!res.ok){$("#out").innerHTML=errBanner(res);return;}
+  $("#out").innerHTML=resultCard(res);
+  animateFills();
+}
+
+function resultCard(res){
+  const o=res.orchestration, t=res.timing_ms;
+  // pipeline steps from actual_order
+  const steps=o.actual_order.map((e,i)=>`
+    <div class="pstep ${i===0?'first':''}"><span class="n">${i+1}</span>${engDot(e)}${e}</div>
+    ${i<o.actual_order.length-1?'<div class="parrow">↓</div>':''}`).join("")
+    || `<div class="pstep"><span class="n">1</span>單一引擎</div>`;
+  const flags=[];
+  if(o.pushdown)flags.push(`<span class="flag pd">graph push-down</span>`);
+  if(o.materializations>0)flags.push(`<span class="flag mut">${o.materializations}× materialize</span>`);
+  flags.push(`<span class="flag rt">${o.round_trips} round-trips</span>`);
+  // per-engine rows bars
+  const maxRows=Math.max(1,...o.per_engine_rows.map(x=>x.rows));
+  const erows=o.per_engine_rows.map(x=>{
+    const col=x.engine.includes("pgvector")?"var(--sem)":x.engine.includes("pg_search")?"var(--lex)":"var(--gph)";
+    return `<div class="erow"><div class="el"><span>${x.engine}</span><span>${x.rows}</span></div>
+      <div class="track"><div class="fill" data-w="${x.rows/maxRows*100}" style="width:0;background:${col}"></div></div></div>`;
+  }).join("")||`<div style="font-family:var(--fm);font-size:11px;color:var(--ink-3)">—</div>`;
+  const hits=res.results.length?res.results.map(h=>`
+    <div class="hit"><div class="rk">${h.rank}</div><div class="meta">
+      <div class="ti">${esc(h.title)}</div>
+      <div class="sub">#${h.paper_id}${h.year?`<span class="sep">·</span>${h.year}`:""}${h.venue?`<span class="sep">·</span>${esc(h.venue)}`:""}${h.cited_count?`<span class="sep">·</span>${h.cited_count} cites`:""}</div>
+    </div></div>`).join(""):`<div class="empty">這個計畫在此參數下回傳 0 筆 — 試試放寬 depth、換 anchor，或改用 v2/v3。</div>`;
+
+  return `<div class="resultcard" style="--pc:${PC[res.plan]}">
+    <div class="rc-head">
+      <span class="qbadge">${res.query}</span>
+      <span class="planbadge">${res.plan}</span>
+      <span class="qd">${QLABEL[res.qtype]} · ${PLANTAG[res.plan]}</span>
+      <div class="timing">
+        <div class="t"><div class="v">${t.p50.toFixed(2)}<span class="u">ms</span></div><div class="l">P50</div></div>
+        <div class="t"><div class="v">${t.p95.toFixed(1)}<span class="u">ms</span></div><div class="l">P95</div></div>
+        <div class="t"><div class="v">${res.result_count}</div><div class="l">hits</div></div>
+      </div>
+    </div>
+    <div class="rc-body">
+      <div class="orch">
+        <h4>編排管線</h4><div class="pipe">${steps}</div>
+        <div class="flags">${flags.join("")}</div>
+        <h4>各引擎候選數 (融合前)</h4><div class="erows">${erows}</div>
+      </div>
+      <div class="hits">${hits}</div>
+    </div>
+  </div>`;
+}
+
+function renderCompare(res){
+  const ok=res.filter(r=>r.ok);
+  if(!ok.length){$("#out").innerHTML=errBanner(res[0]||{});return;}
+  const q=ok[0];
+  const maxP=Math.max(...ok.map(r=>r.timing_ms.p50));
+  const fastest=ok.reduce((a,b)=>a.timing_ms.p50<b.timing_ms.p50?a:b);
+  // latency bars in plan order
+  const bars=PLANS.map(p=>{
+    const r=res.find(x=>x.plan===p&&x.ok); if(!r)return"";
+    const w=r.timing_ms.p50/maxP*100;
+    const best=r.plan===fastest.plan?` · 最快`:"";
+    return `<div class="lb" style="--pc:${PC[p]}"><div class="pn">${p}</div>
+      <div class="track"><div class="fill" data-w="${w}" style="width:0"></div></div>
+      <div class="val"><b>${r.timing_ms.p50.toFixed(2)}</b> ms${best}</div></div>`;
+  }).join("");
+  // ranking table
+  const k=Math.max(...ok.map(r=>r.results.length));
+  let rows="";
+  for(let i=0;i<k;i++){
+    rows+=`<tr><td class="rk">${i+1}</td>`+PLANS.map(p=>{
+      const r=res.find(x=>x.plan===p&&x.ok);
+      const h=r&&r.results[i];
+      return `<td>${h?`${esc(trunc(h.title,64))}<div class="pid">#${h.paper_id}</div>`:'<span class="pid">—</span>'}</td>`;
+    }).join("")+"</tr>";
+  }
+  const th=PLANS.map(p=>`<th class="pc-h" style="--pc:${PC[p]}">${p}</th>`).join("");
+  $("#out").innerHTML=`<div class="cmpwrap">
+    <div class="ch"><span class="t">${q.query} · 四計畫並排</span><span class="d">${QLABEL[q.qtype]}</span></div>
+    <div class="latbars">${bars}</div>
+    <div class="note">同一個查詢、同樣的結果語意,不同計畫的延遲與排序差異。注意 naive 與 v1 通常完全一致;v2/v3 因 push-down 而更快,Q6/Q7 的 v3 是最大贏點。</div>
+    <table class="cmptbl"><thead><tr><th>#</th>${th}</tr></thead><tbody>${rows}</tbody></table>
+  </div>`;
+  animateFills();
+}
+
+function animateFills(){requestAnimationFrame(()=>requestAnimationFrame(()=>{
+  document.querySelectorAll(".fill[data-w]").forEach(f=>f.style.width=f.dataset.w+"%");
+}));}
+function esc(s){return(s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function trunc(s,n){s=s||"";return s.length>n?s.slice(0,n-1)+"…":s;}
+
+// init
+selQ(6); curPlan="v3"; document.querySelector('.planchip[data-p="v3"]').classList.add("on");
+$("#bm25_text").value="batch normalization"; $("#seed_chunk").value=1; $("#anchor_paper").value=1;
+</script>
+</body>
+</html>

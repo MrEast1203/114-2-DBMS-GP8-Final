@@ -20,8 +20,11 @@ logs/
 # HTML report artifacts kept for the author's own viewing — not published
 *.html
 
-# Exception: the interactive web GUI is version-controlled and meant to be shared
+# Exception: the web GUI is version-controlled and meant to be shared.
+# app.html is the live orchestrator console (served by `serve`, baked in via
+# include_str!); index.html is the static report-data visual summary.
 !web/index.html
+!web/app.html
 
 # Exception: eval/ holds version-controlled ground truth + query specs
 !eval/*.jsonl
