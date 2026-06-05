@@ -218,6 +218,42 @@ exist to confirm baseline parity across plans.
 
 ---
 
+## Interactive GUI
+
+Want to *run* the orchestrator instead of reading numbers? There is a
+small web console that drives the exact same `plan.rs` code paths from a
+browser:
+
+```bash
+make up                 # postgres + pgvector + pg_search (corpus must be loaded)
+make gui                # builds, then serves http://127.0.0.1:8080
+# or directly:
+cargo run --release -p researchdb-bench -- serve --port 8080
+```
+
+Open <http://127.0.0.1:8080>, pick a query type (Q1–Q7), choose a plan
+(or **compare all four side-by-side**), optionally load one of the 20
+committed eval queries as a preset, and hit **Run**. For each run the
+page shows, straight from the live `PlanResult`:
+
+- the fused **top-K papers** (title / year / venue / citations),
+- measured **P50 / P95** latency over `samples` runs (1 warm-up first),
+- the **engine execution order**, whether **graph push-down** /
+  materialization happened, round-trip count, and the **per-engine
+  candidate counts** before fusion.
+
+The server (`bench/src/serve.rs`) is a dependency-free `tokio::net`
+HTTP server — no axum/hyper — and bakes `web/app.html` into the binary
+via `include_str!`, so it needs no files on disk at runtime. It is a
+localhost dev tool, not a production server. It does need the database
+up with the corpus loaded (same prerequisites as the benchmarks).
+
+> `web/index.html` is a separate, static visual summary of the
+> committed `reports/*.json` (open it directly in a browser); the
+> live console above is `web/app.html`, served by `serve`.
+
+---
+
 ## Reports
 
 All numbers cited in the project report are reproducible from the JSON

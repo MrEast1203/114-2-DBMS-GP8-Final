@@ -23,6 +23,7 @@ mod graph_engine;
 mod microbench;
 mod plan;
 mod query;
+mod serve;
 mod smoke;
 mod storage;
 
@@ -59,6 +60,8 @@ enum Cmd {
     BfsShootout(graph_engine::ShootoutArgs),
     /// Phase 1 §9: concurrent workload — QPS + tail latency curve.
     Concurrent(concurrent::ConcurrentArgs),
+    /// Interactive web GUI: run the four-plan orchestrator from a browser.
+    Serve(serve::ServeArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -157,6 +160,10 @@ async fn main() -> Result<()> {
         Cmd::Concurrent(args) => {
             let pool = db::connect(&dsn).await?;
             concurrent::run(&pool, args).await
+        }
+        Cmd::Serve(args) => {
+            let pool = db::connect(&dsn).await?;
+            serve::run(pool, args).await
         }
     }
 }

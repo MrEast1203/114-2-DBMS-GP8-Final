@@ -9,10 +9,15 @@ Three strategies:
                    shared words similar vectors. Zero-dep semantic
                    signal, good for sanity checks.
   * `minilm`     — `sentence-transformers/all-MiniLM-L6-v2`. Real 384-dim
-                   sentence embedding model. CPU-friendly (~50ms / chunk
-                   on Apple Silicon). Required for meaningful NDCG@10
-                   numbers in the Phase 1 writeup.
+                   sentence embedding model. Auto-selects the fastest
+                   torch device (CUDA → Apple MPS → CPU; override with
+                   --device). On Apple MPS it runs ~1k chunks/s, so the
+                   full corpus is minutes, not hours. Required for
+                   meaningful NDCG@10 numbers in the Phase 1 writeup.
+
+A tqdm progress bar (count · rate · ETA) is shown while embedding.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,6 +35,7 @@ VECTOR_DIM = 384
 
 # --- vector strategies -----------------------------------------------------
 
+
 def rand_unit_vector(seed: int) -> list[float]:
     rng = random.Random(seed)
     v = [rng.gauss(0.0, 1.0) for _ in range(VECTOR_DIM)]
@@ -37,15 +43,58 @@ def rand_unit_vector(seed: int) -> list[float]:
     return [x / n for x in v]
 
 
-def make_minilm_encoder():
+def pick_device(requested: str | None) -> str:
+    """Resolve the torch device. "auto" prefers CUDA, then Apple MPS, then
+    CPU. Encoding is numerically equivalent across devices (the model
+    weights are identical), so this is purely a speed choice."""
+    if requested and requested != "auto":
+        return requested
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def make_minilm_encoder(device: str):
     """Lazy-load all-MiniLM-L6-v2 so the import only happens when needed.
     Returns a callable: (texts: list[str]) -> list[list[float]]."""
     from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+    model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device=device)
+
     def encode(texts: list[str]) -> list[list[float]]:
         embs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
         return [list(map(float, v)) for v in embs]
+
     return encode
+
+
+def _progress(total: int, desc: str):
+    """tqdm progress bar with a no-op fallback so the random / bag-of-words
+    strategies still run in a base env without the `embed` extra installed."""
+    try:
+        from tqdm import tqdm
+
+        return tqdm(total=total, unit="chunk", desc=desc, dynamic_ncols=True)
+    except ImportError:
+
+        class _Noop:
+            def update(self, _n):
+                pass
+
+            def set_postfix_str(self, _s):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        return _Noop()
 
 
 def bag_of_words_vector(text: str) -> list[float]:
@@ -68,15 +117,20 @@ def vector_literal(v: list[float]) -> str:
 
 # --- driver ----------------------------------------------------------------
 
-def populate(conn: psycopg.Connection, strategy: str, batch: int = 256,
-             force: bool = False) -> int:
+
+def populate(
+    conn: psycopg.Connection,
+    strategy: str,
+    batch: int = 256,
+    force: bool = False,
+    device: str | None = None,
+) -> int:
     """Embed all chunks whose chunk_embeddings row is missing (or all when
     --force). The minilm strategy batches at 256 to amortize tokenizer
     overhead; random / bag-of-words at 1000 since they have no GPU dance."""
     query = "SELECT c.id, c.text FROM chunks c"
     if not force:
-        query += (" LEFT JOIN chunk_embeddings ce ON ce.chunk_id = c.id"
-                  " WHERE ce.chunk_id IS NULL")
+        query += " LEFT JOIN chunk_embeddings ce ON ce.chunk_id = c.id WHERE ce.chunk_id IS NULL"
     with conn.cursor() as cur:
         cur.execute(query)
         rows = cur.fetchall()
@@ -86,8 +140,12 @@ def populate(conn: psycopg.Connection, strategy: str, batch: int = 256,
         return 0
 
     encoder = None
+    desc = strategy
     if strategy == "minilm":
-        encoder = make_minilm_encoder()
+        dev = pick_device(device)
+        print(f"  minilm device: {dev}", file=sys.stderr)
+        encoder = make_minilm_encoder(dev)
+        desc = f"embedding (minilm/{dev})"
     elif strategy == "random":
         batch = 1000
     elif strategy == "bag-of-words":
@@ -96,10 +154,10 @@ def populate(conn: psycopg.Connection, strategy: str, batch: int = 256,
         raise ValueError(f"unknown strategy: {strategy}")
 
     inserted = 0
-    with conn.cursor() as cur:
+    with conn.cursor() as cur, _progress(len(rows), desc) as bar:
         for i in range(0, len(rows), batch):
-            chunk = rows[i:i + batch]
-            cids  = [c[0] for c in chunk]
+            chunk = rows[i : i + batch]
+            cids = [c[0] for c in chunk]
             texts = [(c[1] or "") for c in chunk]
 
             if strategy == "minilm":
@@ -109,10 +167,7 @@ def populate(conn: psycopg.Connection, strategy: str, batch: int = 256,
             else:  # bag-of-words
                 vectors = [bag_of_words_vector(t) for t in texts]
 
-            args = [
-                (cid, vector_literal(v), f"phase1.{strategy}")
-                for cid, v in zip(cids, vectors)
-            ]
+            args = [(cid, vector_literal(v), f"phase1.{strategy}") for cid, v in zip(cids, vectors)]
             cur.executemany(
                 "INSERT INTO chunk_embeddings (chunk_id, embedding, model) "
                 "VALUES (%s, %s::vector, %s) "
@@ -121,7 +176,7 @@ def populate(conn: psycopg.Connection, strategy: str, batch: int = 256,
                 args,
             )
             inserted += len(chunk)
-            print(f"  {inserted}/{len(rows)}", file=sys.stderr)
+            bar.update(len(chunk))
     conn.commit()
     return inserted
 
@@ -135,18 +190,31 @@ def get_dsn() -> str:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--strategy", choices=["random", "bag-of-words", "minilm"],
-                   default="minilm",
-                   help="Vector synthesis strategy. minilm = real sentence-transformers; "
-                        "random = deterministic per chunk_id; bag-of-words = word-hash similarity.")
+    p.add_argument(
+        "--strategy",
+        choices=["random", "bag-of-words", "minilm"],
+        default="minilm",
+        help="Vector synthesis strategy. minilm = real sentence-transformers; "
+        "random = deterministic per chunk_id; bag-of-words = word-hash similarity.",
+    )
     p.add_argument("--dsn", default=None)
-    p.add_argument("--force", action="store_true",
-                   help="Re-embed all chunks even if chunk_embeddings already populated.")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-embed all chunks even if chunk_embeddings already populated.",
+    )
+    p.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda", "mps"],
+        default="auto",
+        help="Torch device for minilm. auto = cuda → mps (Apple) → cpu. "
+        "Result vectors are equivalent across devices; this only affects speed.",
+    )
     args = p.parse_args()
 
     dsn = args.dsn or get_dsn()
     with psycopg.connect(dsn, autocommit=False) as conn:
-        n = populate(conn, args.strategy, force=args.force)
+        n = populate(conn, args.strategy, force=args.force, device=args.device)
     print(f"embedded {n} chunks with strategy={args.strategy}")
 
 

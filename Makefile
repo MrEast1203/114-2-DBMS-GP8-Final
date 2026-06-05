@@ -11,7 +11,7 @@
 #   make ingest      # fetch real OpenAlex subgraph (requires OPENALEX_MAILTO)
 #   make bench       # full 7 × 3 benchmark cells (after orchestrator lands)
 
-.PHONY: help up down logs migrate synth load smoke ingest test build clean reset fmt
+.PHONY: help up down logs migrate synth load smoke ingest test build clean reset fmt gui
 
 DB_CMD = docker exec researchdb-db psql -U researchdb -d researchdb -v ON_ERROR_STOP=1
 
@@ -77,6 +77,10 @@ cold-warm: build     ## §E1 cold/warm latency for one query (default Q1 v1)
 
 health: build        ## DB connectivity + AGE extension check
 	./target/release/researchdb-bench health
+
+gui: build           ## Launch the interactive web GUI (http://127.0.0.1:8080)
+	@echo "→ open http://127.0.0.1:8080  (needs 'make up' + a loaded corpus)"
+	./target/release/researchdb-bench serve --port 8080
 
 fmt:                 ## Format Rust + Python
 	cargo fmt
