@@ -73,6 +73,15 @@
   /* fields not used by the current query type: still fully editable, just a quieter label */
   .fld.unused .lab{opacity:.45}
   .fld.unused .lab .hint::after{content:" · 此類型未使用"}
+  /* live preview of what a seed_chunk / anchor_paper id actually points at */
+  .idprev{display:none;margin-top:7px;font-family:var(--fb);font-size:13.5px;line-height:1.5;color:var(--ink-3)}
+  .idprev.show{display:block}
+  .idprev .arr{color:var(--ink-3);opacity:.7}
+  .idprev .ttl{color:var(--ink-2);font-weight:600}
+  .idprev .yr{color:var(--ink-3)}
+  .idprev .snip{display:block;margin-top:3px;padding-left:9px;border-left:2px solid var(--rule-soft);color:var(--ink-3);font-style:italic}
+  .idprev.err{display:block;color:var(--accent);font-family:var(--fm);font-size:12.5px}
+  .fld.unused .idprev,.idprev.dim{opacity:.45}
   .adv{margin-top:20px}
   .adv summary{font-family:var(--fm);font-size:13px;color:var(--ink-3);cursor:pointer;letter-spacing:.04em}
 
@@ -129,6 +138,25 @@
   .hit .sub{font-family:var(--fm);font-size:12.5px;color:var(--ink-3);margin-top:4px}
   .hit .sub .sep{margin:0 8px;opacity:.5}
   .empty{padding:30px 24px;color:var(--ink-3);font-style:italic;font-size:15.5px}
+  /* ground-truth scoring: summary band + per-result relevance badge */
+  .gtsum{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:16px 24px 0;padding:10px 15px;border:1px solid var(--rule-soft);border-radius:6px;background:var(--paper);font-family:var(--fm);font-size:12.5px;color:var(--ink-3)}
+  .gtsum .gl{font-weight:600;letter-spacing:.05em;color:var(--leaf);text-transform:uppercase;font-size:10.5px}
+  .gtsum .gv b{color:var(--ink);font-size:15px;font-feature-settings:"tnum"}
+  .gtsum .gsep{opacity:.35}
+  .gtm{width:23px;height:23px;flex-shrink:0;align-self:center;display:flex;align-items:center;justify-content:center;border-radius:50%;font-size:13px;font-weight:700}
+  .gtm.ok{background:rgba(78,107,63,.15);color:var(--leaf)}
+  .gtm.no{background:rgba(107,32,32,.12);color:var(--accent)}
+  .gtm.na{background:var(--paper-3);color:var(--ink-3)}
+  .lb .acc{font-family:var(--fm);font-size:11.5px;color:var(--ink-3);margin-top:3px;text-align:right;font-feature-settings:"tnum"}
+  .lb .acc b{color:var(--ink-2)}
+  .cm{display:inline-block;width:1.15em;font-weight:700;font-family:var(--fm)}
+  .cm.ok{color:var(--leaf)} .cm.no{color:var(--accent)} .cm.na{color:var(--ink-3);opacity:.6}
+  /* per-aspect trio chips under each result */
+  .asp{margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .ax{font-family:var(--fm);font-size:11px;padding:1.5px 8px;border-radius:10px;border:1px solid var(--rule-soft);letter-spacing:.02em;white-space:nowrap}
+  .ax.y{color:var(--leaf);border-color:rgba(78,107,63,.35);background:rgba(78,107,63,.07)}
+  .ax.n{color:var(--accent);border-color:rgba(107,32,32,.3);background:rgba(107,32,32,.06)}
+  .axr{font-family:var(--fm);font-size:11px;color:var(--accent);font-style:italic;margin-left:2px}
 
   /* ---- compare ---- */
   .cmpwrap{border:1px solid var(--rule-soft);background:var(--paper-2);margin-bottom:20px;border-radius:6px;overflow:hidden;box-shadow:0 1px 3px rgba(27,25,22,.06)}
@@ -178,12 +206,13 @@
       <select id="presetSel"><option value="">✎ 自訂查詢(自行輸入下方參數)</option></select>
 
       <div class="ptitle">③ 參數</div>
-      <label class="fld" id="f-seed"><span class="lab">seed_chunk <span class="hint">語義錨點 chunk id</span></span><input type="number" id="seed_chunk" value="1" min="1"></label>
+      <label class="fld" id="f-seed"><span class="lab">seed_chunk <span class="hint">語義錨點 chunk id</span></span><input type="number" id="seed_chunk" value="1" min="1"><div class="idprev" id="seed_prev"></div></label>
       <label class="fld" id="f-bm25"><span class="lab">bm25_text <span class="hint">精準關鍵詞</span></span><input type="text" id="bm25_text" placeholder="batch normalization"></label>
       <div class="twin">
         <label class="fld" id="f-anchor"><span class="lab">anchor_paper <span class="hint">圖錨點 paper id</span></span><input type="number" id="anchor_paper" value="1" min="1"></label>
         <label class="fld" id="f-depth"><span class="lab">depth <span class="hint">1–3</span></span><input type="number" id="depth" value="2" min="1" max="3"></label>
       </div>
+      <div class="idprev" id="anchor_prev"></div>
 
       <div class="ptitle">④ 計畫</div>
       <div class="planrow" id="planrow"></div>
@@ -243,6 +272,7 @@ function selQ(q){
   $("#f-bm25").classList.toggle("unused",!e[1]);
   $("#f-anchor").classList.toggle("unused",!e[2]);
   $("#f-depth").classList.toggle("unused",!e[2]);
+  $("#anchor_prev").classList.toggle("dim",!e[2]);   // anchor preview sits outside the field, dim it to match
 }
 
 // ---- build plan chips ----
@@ -276,6 +306,7 @@ $("#presetSel").onchange=e=>{
   if(p.anchor_paper!=null)$("#anchor_paper").value=p.anchor_paper;
   if(p.depth!=null)$("#depth").value=p.depth;
   $("#bm25_text").value=p.bm25_text||"";
+  refreshPreviews();
 };
 // hand-editing any field drops back to custom mode
 ["seed_chunk","bm25_text","anchor_paper","depth","k","ef_search"].forEach(id=>{
@@ -284,10 +315,12 @@ $("#presetSel").onchange=e=>{
 
 // ---- gather form ----
 function form(){
+  const sel=$("#presetSel").value;
+  const qid=(sel!==""&&PRESETS[sel])?PRESETS[sel].qid:null;   // preset → score vs ground truth
   return {
     query:curQ, k:+$("#k").value, depth:+$("#depth").value, ef_search:+$("#ef_search").value,
     seed_chunk:+$("#seed_chunk").value, anchor_paper:+$("#anchor_paper").value,
-    bm25_text:$("#bm25_text").value, samples:+$("#samples").value
+    bm25_text:$("#bm25_text").value, samples:+$("#samples").value, qid
   };
 }
 async function search(plan){
@@ -295,6 +328,28 @@ async function search(plan){
   const r=await fetch("/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   return r.json();
 }
+
+// ---- live id previews: resolve a seed_chunk / anchor_paper id into the
+//      paper it actually points at, so the raw number stops being opaque ----
+function debounce(fn,ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);};}
+async function resolvePreview(kind,raw,el){
+  const n=+raw;
+  if(!Number.isInteger(n)||n<1){el.className="idprev";el.innerHTML="";return;}
+  try{
+    const d=await(await fetch(`/resolve?${kind}=${n}`)).json();
+    if(!d.ok){el.className="idprev err";el.textContent="⚠ "+(d.error||"查無此 id");return;}
+    const yr=d.year?` <span class="yr">· ${d.year}</span>`:"";
+    let html=`<span class="arr">↳ 📄 </span><span class="ttl">${esc(d.title)}</span>${yr}`;
+    if(d.snippet)html+=`<span class="snip">「${esc(d.snippet)}」</span>`;
+    el.className="idprev show";el.innerHTML=html;
+  }catch{el.className="idprev";el.innerHTML="";}
+}
+function refreshPreviews(){
+  resolvePreview("chunk",$("#seed_chunk").value,$("#seed_prev"));
+  resolvePreview("paper",$("#anchor_paper").value,$("#anchor_prev"));
+}
+$("#seed_chunk").addEventListener("input",debounce(()=>resolvePreview("chunk",$("#seed_chunk").value,$("#seed_prev")),250));
+$("#anchor_paper").addEventListener("input",debounce(()=>resolvePreview("paper",$("#anchor_paper").value,$("#anchor_prev")),250));
 
 // ---- run ----
 $("#runbtn").onclick=run;
@@ -330,8 +385,36 @@ function renderSingle(res){
   animateFills();
 }
 
+// relevance badge for a single result, given its GT label (true/false/null)
+function gtMark(rel){
+  if(rel===true) return `<div class="gtm ok" title="符合此查詢所有面向 predicate → 相關">✓</div>`;
+  if(rel===false) return `<div class="gtm no" title="在標註池中但不符合此查詢的 predicate → 不相關">✗</div>`;
+  return `<div class="gtm na" title="不在此查詢的標註池中 → 依 pooling 視為不相關(relevance 0)">–</div>`;
+}
+// per-aspect trio (sem/lex/gph) for one result — shows which predicate it
+// passed/failed, so a ✗ is explainable (§6.3.6). Only the demanded axes appear.
+function aspLine(h){
+  if(!h.aspects||!h.aspects.length) return "";
+  const chips=h.aspects.map(a=>`<span class="ax ${a.ok?'y':'n'}">${a.k} ${a.ok?'✓':'✗'}</span>`).join("");
+  let reason="";
+  if(h.relevant===false){const f=h.aspects.filter(a=>!a.ok).map(a=>a.k);if(f.length)reason=`<span class="axr">未滿足 ${f.join(" / ")} predicate</span>`;}
+  return `<div class="asp">${chips}${reason}</div>`;
+}
+// ground-truth summary band shown above the result body for preset runs
+function gtBand(g){
+  if(!g||!g.available) return "";
+  const nd=g.ndcg10!=null?g.ndcg10.toFixed(3):"—";
+  return `<div class="gtsum">
+    <span class="gl">Ground Truth</span>
+    <span class="gv">命中 <b>${g.hits}/${g.returned}</b></span><span class="gsep">·</span>
+    <span class="gv">NDCG@10 <b>${nd}</b></span><span class="gsep">·</span>
+    <span class="gv">池中相關 <b>${g.relevant_in_pool}</b></span>
+  </div>`;
+}
+
 function resultCard(res){
   const o=res.orchestration, t=res.timing_ms;
+  const gtOn=res.ground_truth&&res.ground_truth.available;
   // pipeline steps from actual_order
   const steps=o.actual_order.map((e,i)=>`
     <div class="pstep ${i===0?'first':''}"><span class="n">${i+1}</span>${engDot(e)}${e}</div>
@@ -352,7 +435,8 @@ function resultCard(res){
     <div class="hit"><div class="rk">${h.rank}</div><div class="meta">
       <div class="ti">${esc(h.title)}</div>
       <div class="sub">#${h.paper_id}${h.year?`<span class="sep">·</span>${h.year}`:""}${h.venue?`<span class="sep">·</span>${esc(h.venue)}`:""}${h.cited_count?`<span class="sep">·</span>${h.cited_count} cites`:""}</div>
-    </div></div>`).join(""):`<div class="empty">這個計畫在此參數下回傳 0 筆 — 試試放寬 depth、換 anchor，或改用 v2/v3。</div>`;
+      ${gtOn?aspLine(h):""}
+    </div>${gtOn?gtMark(h.relevant):""}</div>`).join(""):`<div class="empty">這個計畫在此參數下回傳 0 筆 — 試試放寬 depth、換 anchor，或改用 v2/v3。</div>`;
 
   return `<div class="resultcard" style="--pc:${PC[res.plan]}">
     <div class="rc-head">
@@ -365,6 +449,7 @@ function resultCard(res){
         <div class="t"><div class="v">${res.result_count}</div><div class="l">hits</div></div>
       </div>
     </div>
+    ${gtBand(res.ground_truth)}
     <div class="rc-body">
       <div class="orch">
         <h4>編排管線</h4><div class="pipe">${steps}</div>
@@ -382,14 +467,22 @@ function renderCompare(res){
   const q=ok[0];
   const maxP=Math.max(...ok.map(r=>r.timing_ms.p50));
   const fastest=ok.reduce((a,b)=>a.timing_ms.p50<b.timing_ms.p50?a:b);
-  // latency bars in plan order
+  const gtOn=ok[0].ground_truth&&ok[0].ground_truth.available;
+  const bestAcc=gtOn?ok.reduce((a,b)=>((a.ground_truth.ndcg10??-1)>=(b.ground_truth.ndcg10??-1)?a:b)):null;
+  // latency bars in plan order (+ accuracy vs ground truth when it's a preset)
   const bars=PLANS.map(p=>{
     const r=res.find(x=>x.plan===p&&x.ok); if(!r)return"";
     const w=r.timing_ms.p50/maxP*100;
     const best=r.plan===fastest.plan?` · 最快`:"";
+    let acc="";
+    if(gtOn&&r.ground_truth&&r.ground_truth.available){
+      const g=r.ground_truth, nd=g.ndcg10!=null?g.ndcg10.toFixed(3):"—";
+      const top=(bestAcc&&r.plan===bestAcc.plan)?" ★":"";
+      acc=`<div class="acc">NDCG <b>${nd}</b> · 命中 ${g.hits}/${g.returned}${top}</div>`;
+    }
     return `<div class="lb" style="--pc:${PC[p]}"><div class="pn">${p}</div>
       <div class="track"><div class="fill" data-w="${w}" style="width:0"></div></div>
-      <div class="val"><b>${r.timing_ms.p50.toFixed(2)}</b> ms${best}</div></div>`;
+      <div class="val"><b>${r.timing_ms.p50.toFixed(2)}</b> ms${best}${acc}</div></div>`;
   }).join("");
   // ranking table
   const k=Math.max(...ok.map(r=>r.results.length));
@@ -398,14 +491,23 @@ function renderCompare(res){
     rows+=`<tr><td class="rk">${i+1}</td>`+PLANS.map(p=>{
       const r=res.find(x=>x.plan===p&&x.ok);
       const h=r&&r.results[i];
-      return `<td>${h?`${esc(trunc(h.title,64))}<div class="pid">#${h.paper_id}</div>`:'<span class="pid">—</span>'}</td>`;
+      const cgOn=r&&r.ground_truth&&r.ground_truth.available;
+      let cm='';
+      if(h&&cgOn){
+        const at=(h.aspects&&h.aspects.length)?h.aspects.map(a=>`${a.k}${a.ok?'✓':'✗'}`).join(' '):'';
+        const cls=h.relevant===true?'ok':h.relevant===false?'no':'na';
+        const sym=h.relevant===true?'✓':h.relevant===false?'✗':'–';
+        const tip=h.relevant===null?'池外 → 依 pooling 視為不相關(relevance 0)':at;
+        cm=`<span class="cm ${cls}" title="${tip}">${sym}</span>`;
+      }
+      return `<td>${h?`${cm}${esc(trunc(h.title,58))}<div class="pid">#${h.paper_id}</div>`:'<span class="pid">—</span>'}</td>`;
     }).join("")+"</tr>";
   }
   const th=PLANS.map(p=>`<th class="pc-h" style="--pc:${PC[p]}">${p}</th>`).join("");
   $("#out").innerHTML=`<div class="cmpwrap">
     <div class="ch"><span class="t">${q.query} · 四計畫並排</span><span class="d">${QLABEL[q.qtype]}</span></div>
     <div class="latbars">${bars}</div>
-    <div class="note">同一個查詢、同樣的結果語意,不同計畫的延遲與排序差異。注意 naive 與 v1 通常完全一致;v2/v3 因 push-down 而更快,Q6/Q7 的 v3 是最大贏點。</div>
+    <div class="note">同一個查詢、同樣的結果語意,不同計畫的延遲與排序差異。注意 naive 與 v1 通常完全一致;v2/v3 因 push-down 而更快,Q6/Q7 的 v3 是最大贏點。${gtOn?' <b>★</b> = NDCG@10 最高的計畫;表格 <span class="cm ok">✓</span> 相關、<span class="cm no">✗</span> 不相關、<span class="cm na">–</span> 未標註(對照 ground truth)。':''}</div>
     <table class="cmptbl"><thead><tr><th>#</th>${th}</tr></thead><tbody>${rows}</tbody></table>
   </div>`;
   animateFills();
@@ -420,6 +522,7 @@ function trunc(s,n){s=s||"";return s.length>n?s.slice(0,n-1)+"…":s;}
 // init
 selQ(6); curPlan="v3"; paintPlanChips();
 $("#bm25_text").value="batch normalization"; $("#seed_chunk").value=1; $("#anchor_paper").value=1;
+refreshPreviews();
 </script>
 </body>
 </html>

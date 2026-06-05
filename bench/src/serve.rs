@@ -30,6 +30,10 @@ use crate::query::{QuerySpec, QueryType};
 const APP_HTML: &str = include_str!("../../web/app.html");
 /// The 20 curated eval queries, shipped as one-click presets.
 const PRESETS_JSONL: &str = include_str!("../../eval/queries.jsonl");
+/// Per-(qid, paper_id) relevance labels for those eval queries, so a preset
+/// run can be scored against ground truth right in the browser. Baked in for
+/// the same reason as the presets: `serve` needs no files on disk at runtime.
+const GT_JSONL: &str = include_str!("../../eval/ground-truth.jsonl");
 
 #[derive(clap::Args, Debug)]
 pub struct ServeArgs {
@@ -147,7 +151,11 @@ async fn handle(mut stream: TcpStream, pool: PgPool) -> Result<()> {
         None => return Ok(()),
     };
 
-    match (req.method.as_str(), req.path.as_str()) {
+    // Split the request target into path + optional query string so exact
+    // routing still works for `/resolve?chunk=1`.
+    let (route, query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
+
+    match (req.method.as_str(), route) {
         ("GET", "/") | ("GET", "/index.html") => {
             write_response(&mut stream, "200 OK", "text/html; charset=utf-8", APP_HTML.as_bytes())
                 .await
@@ -155,6 +163,14 @@ async fn handle(mut stream: TcpStream, pool: PgPool) -> Result<()> {
         ("GET", "/presets") => {
             let body = presets_json().to_string();
             write_response(&mut stream, "200 OK", "application/json", body.as_bytes()).await
+        }
+        ("GET", "/resolve") => {
+            let body = match resolve_anchor(&pool, query).await {
+                Ok(v) => v,
+                Err(e) => json!({ "ok": false, "error": e.to_string() }),
+            };
+            write_response(&mut stream, "200 OK", "application/json", body.to_string().as_bytes())
+                .await
         }
         ("POST", "/search") => {
             let body = match run_search(&pool, &req.body).await {
@@ -213,6 +229,10 @@ struct SearchReq {
     bm25_text: Option<String>,
     #[serde(default)]
     samples: Option<usize>,
+    /// Eval-query id (e.g. "Q4-1") when the run came from a preset. Present →
+    /// the response is scored against ground truth; absent → custom query, no GT.
+    #[serde(default)]
+    qid: Option<String>,
 }
 
 async fn run_search(pool: &PgPool, body: &[u8]) -> Result<Value> {
@@ -252,13 +272,48 @@ async fn run_search(pool: &PgPool, body: &[u8]) -> Result<Value> {
     }
     let res = last.unwrap();
 
-    // Enrich the top-K paper ids with titles in the orchestrator's order.
-    let hits = enrich(pool, &res.paper_ids, k).await?;
-
     let (sem, lex, gph) = q.engines();
+
+    // If this run came from a labelled eval query, score it against ground
+    // truth. Effective relevance is the AND of the aspect labels for exactly
+    // the engines this query type uses (mirrors eval/evaluate.py). Done after
+    // the timing loop, so GT lookup never pollutes the measured latency.
+    let gt_rel = req
+        .qid
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|qid| ground_truth_for(qid, sem, lex, gph))
+        .filter(|m| !m.is_empty());
+
+    // Enrich the top-K paper ids with titles (+ GT mark) in ranking order.
+    let hits = enrich(pool, &res.paper_ids, k, gt_rel.as_ref()).await?;
+
     let p50 = pct(&durations_us, 0.50);
     let p95 = pct(&durations_us, 0.95);
     let pmin = *durations_us.iter().min().unwrap_or(&0);
+
+    let ground_truth = match &gt_rel {
+        Some(rel) => {
+            let topk: Vec<i64> = res.paper_ids.iter().take(k).copied().collect();
+            let hits_n = topk.iter().filter(|p| rel.get(p).is_some_and(|r| r.relevant)).count();
+            let pool_relevant = rel.values().filter(|r| r.relevant).count();
+            let ndcg = ndcg_at_k(&res.paper_ids, rel, k);
+            json!({
+                "available": true,
+                "qid": req.qid,
+                "ndcg10": if ndcg.is_nan() {
+                    Value::Null
+                } else {
+                    let r = (ndcg * 1000.0).round() / 1000.0;
+                    json!(if r == 0.0 { 0.0 } else { r }) // normalize -0.0 → 0.0
+                },
+                "hits": hits_n,
+                "returned": topk.len(),
+                "relevant_in_pool": pool_relevant,
+            })
+        }
+        None => json!({ "available": false }),
+    };
 
     Ok(json!({
         "ok": true,
@@ -292,10 +347,16 @@ async fn run_search(pool: &PgPool, body: &[u8]) -> Result<Value> {
         },
         "result_count": res.paper_ids.len(),
         "results": hits,
+        "ground_truth": ground_truth,
     }))
 }
 
-async fn enrich(pool: &PgPool, paper_ids: &[i64], k: usize) -> Result<Value> {
+async fn enrich(
+    pool: &PgPool,
+    paper_ids: &[i64],
+    k: usize,
+    gt_rel: Option<&std::collections::HashMap<i64, GtRow>>,
+) -> Result<Value> {
     let top: Vec<i64> = paper_ids.iter().take(k).copied().collect();
     if top.is_empty() {
         return Ok(json!([]));
@@ -325,6 +386,18 @@ async fn enrich(pool: &PgPool, paper_ids: &[i64], k: usize) -> Result<Value> {
             .get(id)
             .cloned()
             .unwrap_or_else(|| (format!("(paper #{id} — title unavailable)"), None, None, 0));
+        // true = labelled relevant, false = in pool but not relevant,
+        // null = no GT for this query / paper not in the labelled pool.
+        let row = gt_rel.and_then(|m| m.get(id));
+        let relevant = match row {
+            Some(r) => json!(r.relevant),
+            None => Value::Null,
+        };
+        // Per-aspect labels for the engines this query type demands, so the GUI
+        // can show which predicate a non-relevant paper failed (§6.3.6).
+        let aspects: Vec<Value> = row
+            .map(|r| r.aspects.iter().map(|(k, ok)| json!({ "k": k, "ok": ok })).collect())
+            .unwrap_or_default();
         out.push(json!({
             "rank": i + 1,
             "paper_id": id,
@@ -332,9 +405,177 @@ async fn enrich(pool: &PgPool, paper_ids: &[i64], k: usize) -> Result<Value> {
             "year": year,
             "venue": venue,
             "cited_count": cited,
+            "relevant": relevant,
+            "aspects": aspects,
         }));
     }
     Ok(Value::Array(out))
+}
+
+// ---------------------------------------------------------------------
+// Ground truth — score a preset run against the labelled eval pool, using
+// the SAME effective-relevance rule as eval/evaluate.py: a paper counts as
+// relevant for a query only if the aspect labels for every engine that query
+// uses are all 1. A demanded aspect labelled null means the row is unjudged
+// and is dropped from the pool (NDCG then treats it as a 0-gain result).
+// ---------------------------------------------------------------------
+
+/// One labelled paper in a query's pool: the effective relevance (AND of the
+/// demanded aspects) plus the demanded per-aspect labels themselves, so the GUI
+/// can show *why* a paper is (not) relevant — e.g. sem✓ lex✗ → fails Q6.
+struct GtRow {
+    relevant: bool,
+    aspects: Vec<(&'static str, bool)>, // only the aspects this query type demands
+}
+
+fn ground_truth_for(
+    qid: &str,
+    want_sem: bool,
+    want_lex: bool,
+    want_gph: bool,
+) -> std::collections::HashMap<i64, GtRow> {
+    // Cheap pre-filter on the quoted qid token (colon spacing varies by
+    // writer), then confirm the parsed qid to stay correct regardless.
+    let needle = format!("\"{qid}\"");
+    let mut rel = std::collections::HashMap::new();
+    for line in GT_JSONL.lines() {
+        if !line.contains(&needle) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v.get("qid").and_then(Value::as_str) != Some(qid) {
+            continue;
+        }
+        let Some(pid) = v.get("paper_id").and_then(Value::as_i64) else { continue };
+        let mut all_one = true;
+        let mut unjudged = false;
+        let mut aspects: Vec<(&'static str, bool)> = Vec::new();
+        for (want, key, name) in [
+            (want_sem, "label_sem", "sem"),
+            (want_lex, "label_lex", "lex"),
+            (want_gph, "label_gph", "gph"),
+        ] {
+            if !want {
+                continue;
+            }
+            // label_sem predates augmentation as plain `label`; fall back to it.
+            let mut val = v.get(key).and_then(Value::as_i64);
+            if val.is_none() && key == "label_sem" {
+                val = v.get("label").and_then(Value::as_i64);
+            }
+            match val {
+                None => {
+                    unjudged = true;
+                    break;
+                }
+                Some(x) => {
+                    let ok = x == 1;
+                    if !ok {
+                        all_one = false;
+                    }
+                    aspects.push((name, ok));
+                }
+            }
+        }
+        if unjudged {
+            continue;
+        }
+        rel.insert(pid, GtRow { relevant: all_one, aspects });
+    }
+    rel
+}
+
+/// Binary-relevance NDCG@k over a ranking, matching eval/evaluate.py: NaN when
+/// the pool has no relevant papers (so the caller can render it as "—").
+fn ndcg_at_k(ranked: &[i64], rel: &std::collections::HashMap<i64, GtRow>, k: usize) -> f64 {
+    let dcg: f64 = ranked
+        .iter()
+        .take(k)
+        .enumerate()
+        .map(|(i, pid)| {
+            let g = if rel.get(pid).is_some_and(|r| r.relevant) { 1.0 } else { 0.0 };
+            g / ((i as f64) + 2.0).log2()
+        })
+        .sum();
+    let n_pos = rel.values().filter(|r| r.relevant).count();
+    if n_pos == 0 {
+        return f64::NAN;
+    }
+    let idcg: f64 = (0..k.min(n_pos)).map(|i| 1.0 / ((i as f64) + 2.0).log2()).sum();
+    if idcg > 0.0 {
+        dcg / idcg
+    } else {
+        0.0
+    }
+}
+
+// ---------------------------------------------------------------------
+// Resolve — turn a raw seed_chunk / anchor_paper id into something a human
+// recognizes, so the GUI can answer "what does seed_chunk = 1 actually mean".
+// ---------------------------------------------------------------------
+
+async fn resolve_anchor(pool: &PgPool, query: &str) -> Result<Value> {
+    let mut chunk_id: Option<i64> = None;
+    let mut paper_id: Option<i64> = None;
+    for pair in query.split('&') {
+        if let Some(v) = pair.strip_prefix("chunk=") {
+            chunk_id = v.parse().ok();
+        } else if let Some(v) = pair.strip_prefix("paper=") {
+            paper_id = v.parse().ok();
+        }
+    }
+
+    // seed_chunk → the paper it belongs to + a short snippet of the chunk text.
+    if let Some(id) = chunk_id {
+        let row = sqlx::query(
+            "SELECT c.paper_id, p.title, p.publish_year, c.text \
+             FROM chunks c JOIN papers p ON p.id = c.paper_id \
+             WHERE c.id = $1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+        return Ok(match row {
+            Some(r) => {
+                let pid: i64 = r.try_get("paper_id").unwrap_or(0);
+                let title: String = r.try_get("title").unwrap_or_default();
+                let year: Option<i32> = r.try_get("publish_year").ok().flatten();
+                let text: String = r.try_get("text").unwrap_or_default();
+                json!({ "ok": true, "kind": "chunk", "id": id, "paper_id": pid,
+                        "title": title, "year": year, "snippet": snippet(&text, 140) })
+            }
+            None => json!({ "ok": false, "error": format!("chunk {id} 不存在") }),
+        });
+    }
+
+    // anchor_paper → just the paper title/year.
+    if let Some(id) = paper_id {
+        let row = sqlx::query("SELECT title, publish_year FROM papers WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+        return Ok(match row {
+            Some(r) => {
+                let title: String = r.try_get("title").unwrap_or_default();
+                let year: Option<i32> = r.try_get("publish_year").ok().flatten();
+                json!({ "ok": true, "kind": "paper", "id": id, "title": title, "year": year })
+            }
+            None => json!({ "ok": false, "error": format!("paper {id} 不存在") }),
+        });
+    }
+
+    anyhow::bail!("missing chunk= or paper= query param")
+}
+
+/// First `max_chars` characters of `text`, trimmed, with an ellipsis if cut.
+/// Char-based (not byte) so multi-byte abstracts never split mid-codepoint.
+fn snippet(text: &str, max_chars: usize) -> String {
+    let t = text.trim();
+    let mut s: String = t.chars().take(max_chars).collect();
+    if t.chars().count() > max_chars {
+        s.push('…');
+    }
+    s
 }
 
 /// Human-friendly engine name. Note the graph engine is `Engine::Age`
