@@ -51,3 +51,5 @@ eval/labeling_titles.txt
 # Docker volumes
 postgres-data/
 eval/candidates_*.jsonl.bak
+
+slide_deck.md

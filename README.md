@@ -1,7 +1,6 @@
 # Hybrid Search Orchestration on PostgreSQL
 
 Course: **NTU 114-2 DBMS · Final Project, Group 8**
-Author: Chan Ching-Kan (chingkan.chan1203@gmail.com)
 
 A research-grade benchmark of **four plans** for running
 **semantic + lexical + graph** search inside a single PostgreSQL instance.
