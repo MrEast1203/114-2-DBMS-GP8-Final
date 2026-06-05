@@ -721,9 +721,11 @@ async fn run_semantic_topn(pool: &PgPool, seed: i64, n: usize, ef: u32) -> Resul
                 ORDER BY ce.embedding <=> seed.embedding \
                 LIMIT $2 \
               ) \
-         SELECT DISTINCT ON (paper_id) paper_id \
-         FROM hit \
-         ORDER BY paper_id, d",
+         SELECT paper_id FROM ( \
+           SELECT DISTINCT ON (paper_id) paper_id, d FROM hit \
+           ORDER BY paper_id, d \
+         ) per_paper \
+         ORDER BY d",
     )
     .bind(seed)
     .bind((n * 3) as i64)
@@ -888,9 +890,11 @@ async fn run_semantic_pushdown(
                 ORDER BY ce.embedding <=> seed.embedding \
                 LIMIT $2 \
               ) \
-         SELECT DISTINCT ON (paper_id) paper_id \
-         FROM hit \
-         ORDER BY paper_id, d",
+         SELECT paper_id FROM ( \
+           SELECT DISTINCT ON (paper_id) paper_id, d FROM hit \
+           ORDER BY paper_id, d \
+         ) per_paper \
+         ORDER BY d",
     )
     .bind(seed)
     .bind((k * 3) as i64)
