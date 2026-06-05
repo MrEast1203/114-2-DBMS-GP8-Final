@@ -2,16 +2,16 @@
 
 Sources: `reports/eval_v3.json` (20 query × 4 plan × 10 samples) +
 `reports/coldwarm_v3.json` (28-cell cold/warm matrix). 評估使用
-**per-aspect ground truth**(1 451 筆,每筆含 `label_sem` /
+**per-aspect ground truth**(1 472 筆,每筆含 `label_sem` /
 `label_lex` / `label_gph` 三個獨立 label,effective relevance 依
 query type 取 predicate AND;§9 詳列方法)。
 
 ## 1. 一句話總結
 
 **v3 chained push-down 同時在 latency 與 NDCG 上贏 v2**:mean P50
-17.51 ms vs v2 24.20 ms(**1.38× 加速**),mean NDCG@10 0.922 vs v2
-0.917(**+0.005,等同或略勝**)。v3 在 Q6 整類大幅領先(+0.034
-NDCG、2.35× P50),Q7 上略弱於 v2(−0.014 NDCG,雜訊量級),Q4 /
+18.85 ms vs v2 26.69 ms(**1.42× 加速**),mean NDCG@10 0.981 vs v2
+0.922(**+0.059**)。v3 在 Q6 整類大幅領先(+0.134
+NDCG、2.42× P50),Q7 整類也領先(+0.100 NDCG),Q4 /
 Q5 byte-identical(delegate)。
 
 ## 2. Per-aspect ground truth
@@ -44,28 +44,28 @@ Q5 byte-identical(delegate)。
 
 | plan  | mean P50 (ms) | mean NDCG@10 | Jaccard@10 vs v2 | RBO@10 vs v2 |
 | ----- | ------------- | ------------ | ---------------- | ------------ |
-| naive | 35.16         | 0.772        | 0.601            | 0.695        |
-| v1    | 35.21         | 0.772        | 0.601            | 0.695        |
-| v2    | 24.20         | 0.917        | —                | —            |
-| v3    | **17.51**     | **0.922**    | 0.664            | 0.704        |
+| naive | 39.42         | 0.767        | 0.731            | 0.796        |
+| v1    | 39.69         | 0.767        | 0.731            | 0.796        |
+| v2    | 26.69         | 0.922        | —                | —            |
+| v3    | **18.85**     | **0.981**    | 0.731            | 0.796        |
 
 讀法:
-- **v3 P50 比 v2 快 1.38×**(17.51 vs 24.20 ms)。
-- **v3 NDCG 比 v2 高 0.005**——非常接近(雜訊量級的 lead)。
-- **v3 vs v2 Jaccard 0.66 / RBO 0.70**:Q4 / Q5 重合(都 delegate),Q6 / Q7 有 ranking 差異;但兩個 plan 的 top-10 在 per-aspect AND 下的 NDCG 同高,代表結果集雖然不同、品質持平。
+- **v3 P50 比 v2 快 1.42×**(18.85 vs 26.69 ms)。
+- **v3 NDCG 比 v2 高 0.059**(0.981 vs 0.922),兩軸同時領先。
+- **v3 vs v2 Jaccard 0.73 / RBO 0.80**:Q4 / Q5 重合(都 delegate),Q6 / Q7 有 ranking 差異——而 v3 在 Q6 / Q7 的 NDCG 顯著高於 v2,代表 ranking 差異是 v3 排得更準。
 
 ## 4. 各查詢類型(mean NDCG@10 / P50 ms,per-aspect AND)
 
 | 類型 | v2 NDCG / P50 | v3 NDCG / P50 | ΔNDCG | P50 加速 (v2/v3) |
 | ---- | ------------- | ------------- | ----- | ---------------- |
-| Q4 (sem ∩ gph)       | 0.917 / 3.5   | **0.917 / 2.8** | **+0.000** (delegate) | 1.25× |
-| Q5 (lex ∩ gph)       | **1.000** / 20.6 | **1.000 / 20.4** | **+0.000** (delegate) | 1.01× |
-| Q6 (sem ∩ lex)       | 0.896 / 43.4  | **0.930 / 18.5** | **+0.034 ✓** | **2.35×** ✓✓ |
-| Q7 (sem ∩ lex ∩ gph) | 0.855 / 29.4  | 0.842 / 28.3  | −0.014 (雜訊) | 1.04× |
+| Q4 (sem ∩ gph)       | 1.000 / 4.5   | **1.000 / 3.8** | **+0.000** (delegate) | 1.18× |
+| Q5 (lex ∩ gph)       | **1.000** / 22.5 | **1.000 / 21.7** | **+0.000** (delegate) | 1.04× |
+| Q6 (sem ∩ lex)       | 0.830 / 48.8  | **0.964 / 20.2** | **+0.134 ✓** | **2.42×** ✓✓ |
+| Q7 (sem ∩ lex ∩ gph) | 0.858 / 31.0  | **0.958 / 29.7**  | **+0.100 ✓** | 1.04× |
 
 Q6 是 v3 的雙重勝利:
-- P50:43.4 → 18.5 ms(**2.35× 加速**,v2 對 Q6 無 graph 可推、原本 P50 與 naive 持平,v3 chain 加速大幅突破)
-- NDCG:0.896 → 0.930(**+0.034**,因為 v3 嚴格遵守 Q6 的 `sem ∩ lex` predicate,不會 retrieve 「topical 但 lex predicate fail」的雜訊論文)
+- P50:48.8 → 20.2 ms(**2.42× 加速**,v2 對 Q6 無 graph 可推、原本 P50 與 naive 持平,v3 chain 加速大幅突破)
+- NDCG:0.830 → 0.964(**+0.134**,因為 v3 嚴格遵守 Q6 的 `sem ∩ lex` predicate,不會 retrieve 「topical 但 lex predicate fail」的雜訊論文)
 
 Q5 兩個 plan 都拿滿分(1.000)——這是 per-aspect 的副作用:Q5 的 effective relevance 只看 `label_lex ∧ label_gph`(操作型),任何 plan 只要正確執行 BM25 + 圖過濾 predicate,top-10 就 100% 是 valid 答案。Q4 / Q5 v3 delegate 到 v2,P50 / NDCG byte-identical。
 
@@ -73,44 +73,43 @@ Q5 兩個 plan 都拿滿分(1.000)——這是 per-aspect 的副作用:Q5 的 ef
 
 | qid  | v2 NDCG / P50 | v3 NDCG / P50 | ΔNDCG  | 備註 |
 | ---- | ------------- | ------------- | ------ | ---- |
-| Q4-1 | 1.000 / 1.8   | 1.000 / 1.7   | +0.000 | delegate |
-| Q4-2 | 0.861 / 6.1   | 0.861 / 5.9   | +0.000 | delegate |
-| Q4-3 | 1.000 / 2.2   | 1.000 / 1.9   | +0.000 | delegate |
-| Q4-4 | 0.788 / 1.4   | 0.788 / 1.2   | +0.000 | delegate |
-| Q4-5 | 0.934 / 5.8   | 0.934 / 3.4   | +0.000 | delegate |
-| Q5-1 | 1.000 / 18.4  | 1.000 / 18.3  | +0.000 | delegate;naive 0.000 因 BM25 top-50 與 S_g 無交集 |
-| Q5-2 | 1.000 / 20.1  | 1.000 / 17.9  | +0.000 | delegate;naive 僅 0.469 |
-| Q5-3 | 1.000 / 25.1  | 1.000 / 27.5  | +0.000 | delegate |
-| Q5-4 | 1.000 / 18.5  | 1.000 / 19.1  | +0.000 | delegate |
-| Q5-5 | 1.000 / 20.9  | 1.000 / 19.1  | +0.000 | delegate;naive 僅 0.220 |
-| Q6-1 | 1.000 / 43.1  | **0.936 / 18.8** | −0.064 | v3 P50 大贏、NDCG 小幅輸 |
-| Q6-2 | 0.956 / 43.0  | 0.854 / 18.2  | −0.102 ⚠ | 唯一 v3 NDCG 明顯輸的 cell(BN/BM25 漏抓) |
-| Q6-3 | 0.665 / 43.9  | **1.000 / 18.4** | **+0.335 ✓✓** | spanner/consensus,v3 完全壓過 v2 |
-| Q6-4 | 1.000 / 43.4  | **0.927 / 19.0** | −0.073 | v3 P50 大贏、NDCG 略輸 |
-| Q6-5 | 0.860 / 43.5  | **0.934 / 18.3** | **+0.073 ✓** | v3 兩軸都贏 |
-| Q7-1 | 0.927 / 20.4  | 0.691 / 22.7  | −0.236 ⚠ | NDCG 大幅輸(BM25 top-50 對 "convolutional neural network" 內容太雜) |
-| Q7-2 | 0.905 / 48.8  | **1.000 / 41.1** | **+0.095 ✓** | v3 完美 |
-| Q7-3 | 0.583 / 21.6  | **0.611 / 21.3** | +0.028 | v3 略勝 |
-| Q7-4 | 1.000 / 22.1  | **1.000 / 20.6** | +0.000 | 兩 plan 都完美 |
-| Q7-5 | 0.861 / 34.1  | **0.905 / 35.8** | **+0.044 ✓** | v3 NDCG 略勝、P50 雜訊 |
+| Q4-1 | 1.000 / 2.3   | 1.000 / 2.0   | +0.000 | delegate |
+| Q4-2 | 1.000 / 8.1   | 1.000 / 7.2   | +0.000 | delegate |
+| Q4-3 | 1.000 / 2.6   | 1.000 / 2.4   | +0.000 | delegate |
+| Q4-4 | 1.000 / 1.9   | 1.000 / 1.6   | +0.000 | delegate;naive 僅 0.649 |
+| Q4-5 | 1.000 / 7.6   | 1.000 / 5.8   | +0.000 | delegate |
+| Q5-1 | 1.000 / 19.9  | 1.000 / 20.0  | +0.000 | delegate;naive 0.000 因 BM25 top-50 與 S_g 無交集 |
+| Q5-2 | 1.000 / 19.5  | 1.000 / 19.5  | +0.000 | delegate;naive 僅 0.469 |
+| Q5-3 | 1.000 / 31.8  | 1.000 / 28.0  | +0.000 | delegate |
+| Q5-4 | 1.000 / 20.2  | 1.000 / 20.6  | +0.000 | delegate |
+| Q5-5 | 1.000 / 21.0  | 1.000 / 20.3  | +0.000 | delegate;naive 僅 0.220 |
+| Q6-1 | 1.000 / 48.3  | **0.934 / 20.1** | −0.066 | v3 P50 大贏、NDCG 小幅輸(廣詞 recall) |
+| Q6-2 | 0.857 / 48.1  | **0.957 / 19.9** | **+0.100 ✓** | v3 兩軸都贏 |
+| Q6-3 | 0.668 / 49.4  | **1.000 / 20.0** | **+0.332 ✓✓** | spanner/consensus,v3 完全壓過 v2 |
+| Q6-4 | 0.841 / 49.0  | **1.000 / 20.9** | **+0.159 ✓** | v3 兩軸都贏 |
+| Q6-5 | 0.782 / 49.2  | **0.931 / 20.3** | **+0.149 ✓** | v3 兩軸都贏 |
+| Q7-1 | 0.927 / 23.3  | **0.931 / 23.5** | +0.004 | 持平(v3 略勝 v2;naive 1.000 為廣詞 recall) |
+| Q7-2 | 1.000 / 47.5  | **1.000 / 42.4** | +0.000 | 兩 plan 都完美 |
+| Q7-3 | 0.503 / 23.3  | **1.000 / 24.1** | **+0.497 ✓✓** | cluster scheduling,v3 完全壓過 v2 |
+| Q7-4 | 1.000 / 23.0  | **1.000 / 21.9** | +0.000 | 兩 plan 都完美 |
+| Q7-5 | 0.861 / 37.9  | 0.861 / 36.5  | +0.000 | 持平(naive 0.890 為廣詞 recall) |
 
 (粗體 = v3 顯著贏 v2;⚠ = ΔNDCG < −0.05;✓ = v3 NDCG ≥ v2 + 0.04)
 
-**v3 NDCG 贏 v2 的 cell:Q6-3 / Q6-5 / Q7-2 / Q7-3 / Q7-5(5 題)**
-**v3 NDCG 輸 v2 > 0.05 的 cell:Q6-1 / Q6-2 / Q6-4 / Q7-1(4 題,3 題 < 0.1)**
+**v3 NDCG 贏 v2 的 cell:Q6-2 / Q6-3 / Q6-4 / Q6-5 / Q7-1 / Q7-3(6 題)**
+**v3 NDCG 輸 v2 的 cell:僅 Q6-1(−0.066),其餘持平——綜合平均勝 v2 +0.059**
 
-## 6. 實質 NDCG 殘餘 gap(Q6-2 / Q7-1)
+## 6. NDCG 殘餘 gap(廣詞 recall)
 
-per-aspect AND 已經把絕大多數「v2 fake-NDCG-advantage」洗掉,剩下少數 cell 還是 v3 落後:
+per-aspect AND 下,v3 相對 v2 只剩 **Q6-1** 一格略低(−0.066),其餘 Q6 / Q7 cell 顯著為正(最高 Q7-3 +0.497)。真正的殘餘出現在「BM25 命中極廣」的查詢上——v3(以及 v2)的 top-N push-down 會把個別相關論文擠到 BM25 top-50 之外,使這幾格略低於後置-filter 的 naive:
 
-- **Q6-2「ResNet + batch normalization」(−0.102)**:剩下的 5 篇 label_sem ∧ label_lex 都 = 1 的論文裡,有些 BM25 把它們排到 top-50 之外。這是 BM25 top-N cutoff 的真實 recall 限制,不是 GT bug。要修需要把 BM25 LIMIT 從 50 提高(代價是 pgvector candidate 集合也變大、抹掉 P50 優勢)。
-- **Q7-1「ResNet + CNN + cites ResNet」(−0.236)**:同樣是 BM25 top-50 對 "convolutional neural network" 命中太多,稀釋了真正符合的論文排序。
+- **Q6-1「Attention + machine translation」、Q7-1「ResNet + convolutional neural network」、Q7-5「LSTM + recurrent」**:v3 比 naive 低 0.03 ~ 0.07。naive 先讓 ranker 排完整個 corpus 再後置過濾,偶然多保住一兩篇廣詞命中的相關論文。
 
-**這兩格是 v3 chained 真正的 limitation**(BM25 top-N cutoff vs corpus-wide 排名的 recall tradeoff)。其它 cell 的 NDCG 跌都在雜訊範圍內,且 v3 也有 5 個 cell NDCG 明顯贏 v2。
+這是 BM25 top-N cutoff vs corpus-wide 排名的 recall tradeoff,不是設計缺陷;差距在 mean 上完全被 v3 的整體領先覆蓋(v3 mean 0.981 vs naive 0.767)。要進一步收掉可把 BM25 LIMIT 從 50 拉高(代價是 pgvector candidate 集合變大、侵蝕 P50 優勢)。
 
 ## 7. v3 適用場景
 
-v3 並非只在「精準關鍵詞」型查詢上有效——**在嚴格遵守 query predicate 的衡量下,v3 在 Q6 整類大幅領先 v2,在 Q7 上多數 cell 持平或略勝**。唯一不適合 v3 的情境:
+v3 並非只在「精準關鍵詞」型查詢上有效——**在嚴格遵守 query predicate 的衡量下,v3 在 Q6 / Q7 兩整類都領先 v2**。唯一不適合 v3 的情境:
 
 - BM25 對查詢詞命中非常廣(`fault tolerance` / `convolutional neural network` 這類常用詞 + 整體 corpus 充滿這類論文),top-N cutoff 把真正應該排前的論文擠到後面。此時 v2 的「不做 push-down,各 ranker 各自從全 corpus 排」反而把語意+詞彙雙重相關的論文一網打盡。
 
@@ -140,7 +139,7 @@ Q6 cold 81 ms → 35 ms(2.3× 加速),warm 43 → 22 ms(2.0×)。
 1. **`label_sem`**(人類軸):讀 title + abstract,單一標註者(本計畫作者,LLM-assisted)。
 2. **`label_lex`**(引擎自動):PostgreSQL 直接判斷 `abstract @@@ bm25_text` 返回 > 0 → 1,否則 0。這就是 v2 / v3 的 BM25 ranker 在執行 lex predicate 時用的同一個 operator——**標註 = 執行語義對齊**。
 3. **`label_gph`**(引擎自動):PostgreSQL 直接判斷 `paper_id IN bfs_recursive_sql(anchor, depth, Reverse)`。這就是 v2 / v3 的 graph push-down 在執行 graph predicate 時用的同一個 SQL。
-4. 對所有 1 451 筆 GT row(20 query × 各題 pool)跑這兩個 SQL,寫進 GT row 的 `label_lex` / `label_gph`(`None` if predicate not in query)。
+4. 對所有 1 472 筆 GT row(20 query × 各題 pool)跑這兩個 SQL,寫進 GT row 的 `label_lex` / `label_gph`(`None` if predicate not in query)。
 5. `evaluate.py` 讀 trio,依 `QTYPE_PREDICATES[qtype]` 取 AND 算 effective relevance,再用既有的 NDCG / Jaccard / RBO 計算。
 
 **Caveat**:
@@ -151,9 +150,9 @@ Q6 cold 81 ms → 35 ms(2.3× 加速),warm 43 → 22 ms(2.0×)。
 
 - [x] GT 每筆有 `label_sem` / `label_lex` / `label_gph` 三個獨立 label。
 - [x] evaluate.py 用 per-query-type 的 predicate AND 算 effective relevance。
-- [x] v3 chained push-down 在 per-aspect GT 下 mean NDCG ≥ v2(0.922 vs 0.917,+0.005)。
-- [x] v3 mean P50 1.38× 快於 v2(17.51 vs 24.20 ms)。
+- [x] v3 chained push-down 在 per-aspect GT 下 mean NDCG > v2(0.981 vs 0.922,+0.059)。
+- [x] v3 mean P50 1.42× 快於 v2(18.85 vs 26.69 ms)。
 - [x] Q4 / Q5 v3 delegate to v2,結果 byte-identical(ΔNDCG = +0.000 共 10 題)。
-- [x] Q6 v3 mean NDCG 0.930 領先 v2 0.896(+0.034),P50 2.35× 加速。
-- [x] 殘餘 NDCG gap(Q6-2 / Q7-1)的根本原因是 BM25 top-N cutoff,不是設計缺陷。
+- [x] Q6 v3 mean NDCG 0.964 領先 v2 0.830(+0.134),P50 2.42× 加速;Q7 v3 0.958 領先 v2 0.858(+0.100)。
+- [x] 殘餘 NDCG gap(廣詞查詢上略低於 naive)的根本原因是 BM25 top-N cutoff,不是設計缺陷。
 - [x] Per-aspect GT 方法論在 §9 完整 disclaim。

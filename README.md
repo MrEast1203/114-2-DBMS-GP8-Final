@@ -28,27 +28,27 @@ per (query, plan) cell, source `reports/eval_v3.json`:
 
 | plan  | mean P50 | NDCG@10 (per-aspect AND) | top-10 vs naive       |
 | ----- | -------- | ------------------------ | --------------------- |
-| naive | 35.16 ms | 0.772                    | — (baseline)          |
-| v1    | 35.21 ms | 0.772                    | Jaccard 1.000 (same)  |
-| v2    | 24.20 ms | 0.917                    | Jaccard 0.601 (differs) |
-| v3    | **17.51 ms** | **0.922**            | Jaccard 0.664 vs v2   |
+| naive | 39.42 ms | 0.767                    | — (baseline)          |
+| v1    | 39.69 ms | 0.767                    | Jaccard 1.000 (same)  |
+| v2    | 26.69 ms | 0.922                    | Jaccard 0.720 (differs) |
+| v3    | **18.85 ms** | **0.981**            | Jaccard 0.731 vs v2   |
 
-- **v2 push-down** cuts mean latency 1.45× over naive and lifts
-  NDCG@10 by +0.145 by restricting the ranker to the graph-filtered
+- **v2 push-down** cuts mean latency 1.48× over naive and lifts
+  NDCG@10 by +0.155 by restricting the ranker to the graph-filtered
   candidate set rather than ranking the whole corpus and filtering
   afterward.
 - **v3 is v2's further latency optimization** — a *chained* push-down
   for the two-ranker query types Q6 / Q7: take graph subset (BFS), then
   BM25 top-N within that subset, then run vector search restricted to
   the BM25 top-N, and finally RRF the vector and BM25 rankings. **v3
-  wins both axes vs v2**: mean P50 17.51 ms vs 24.20 ms (**1.38×
-  faster**) and mean NDCG@10 0.922 vs 0.917 (**+0.005**, essentially
-  tied with slight v3 lead). Q4 / Q5 delegate to v2 verbatim (NDCG
-  byte-identical, ΔNDCG = +0.000 × 10). **Q6 is v3's biggest win**
-  (NDCG 0.930 vs 0.896, +0.034; P50 18.5 vs 43.4 ms, 2.35×),
-  particularly Q6-3 (spanner/consensus, v3 +0.335). Q7 is essentially
-  tied (v3 wins Q7-2 +0.095, Q7-5 +0.044, loses Q7-1 −0.236). Full
-  per-query breakdown + methodology disclaim in
+  wins both axes vs v2**: mean P50 18.85 ms vs 26.69 ms (**1.42×
+  faster**) and mean NDCG@10 0.981 vs 0.922 (**+0.059**). Q4 / Q5
+  delegate to v2 verbatim (NDCG byte-identical, ΔNDCG = +0.000 × 10).
+  **Q6 is v3's biggest win** (NDCG 0.964 vs 0.830, +0.134; P50 20.2 vs
+  48.8 ms, 2.42×), particularly Q6-3 (spanner/consensus, v3 +0.332).
+  **Q7 also wins** (v3 0.958 vs v2 0.858, +0.100), led by Q7-3
+  (cluster scheduling, v3 +0.497). Full per-query breakdown +
+  methodology disclaim in
   `reports/v3_summary.md` and `docs/report.html` §4.7 / §8.4 / §11.2.
 - **Ground truth uses per-aspect AND labels.** Each (qid, paper_id)
   carries three independent labels: `label_sem` (human topical
@@ -60,7 +60,7 @@ per (query, plan) cell, source `reports/eval_v3.json`:
   lexically contain "batch normalization" correctly counts as
   **non-relevant for Q6** even if the human marked it topical. This
   keeps NDCG aligned with what the query actually asks for. Pool size
-  1 451 (qid, paper_id) pairs unioning the three engines' top-N with
+  1 472 (qid, paper_id) pairs unioning the three engines' top-N with
   every plan's top-10. Implementation in
   `eval/augment_gt_per_aspect.py` + `eval/evaluate.py`
   (`QTYPE_PREDICATES`); methodology in `docs/report.html` §6.3.
@@ -68,7 +68,7 @@ per (query, plan) cell, source `reports/eval_v3.json`:
   naive uses graph as a post-filter on RRF results; v2 pushes it down
   to the ranker SQL as a pre-filter; v3 inherits v2's choice
   (graph push-down for Q4 / Q5 / Q7, no graph in Q6). The naive → v2
-  comparison shows graph-as-filter beats graph-as-ranker by +0.145
+  comparison shows graph-as-filter beats graph-as-ranker by +0.155
   NDCG.
 - `naive` and `v1` return **bit-identical top-10s** on every query.
   Cost-based reorder by itself does *not* change latency or quality in
@@ -102,7 +102,7 @@ Detailed per-query numbers and methodology are in `reports/*.json` (see
 │   └── embed_chunks.py     # MiniLM (all-MiniLM-L6-v2) embeddings
 ├── eval/               # Evaluation harness
 │   ├── queries.jsonl       # 20 hand-crafted Q4–Q7 queries
-│   ├── ground-truth.jsonl  # 1 451 (query, paper) rows, each with per-aspect trio
+│   ├── ground-truth.jsonl  # 1 472 (query, paper) rows, each with per-aspect trio
 │   ├── build_candidate_pool.py  # TREC-style pooling
 │   └── evaluate.py         # NDCG@10 / Jaccard / RBO computation
 ├── migrations/         # 4 SQL migrations (paper schema, AGE, indexes)
@@ -183,16 +183,18 @@ that ranks well in **both** vector and BM25 still wins.
 **Why graph is not an RRF ranking signal:** naive (graph as a post-filter
 on RRF) versus v2 (graph as a pre-filter pushed into ranker SQL) already
 answered this — moving graph out of the ranking stage lifted mean NDCG@10
-from 0.772 to 0.917 (+0.145). v3 sticks with v2's choice; graph is
+from 0.767 to 0.922 (+0.155). v3 sticks with v2's choice; graph is
 filter-only, never an RRF input.
 
 **v3 under per-aspect AND GT** (full breakdown in `reports/v3_summary.md`
 and `docs/report.html` §4.7 / §8.4 / §11.2): v3 wins both axes vs v2 —
-mean P50 17.51 ms vs 24.20 ms (**1.38× faster**) AND mean NDCG@10
-0.922 vs 0.917 (essentially tied / slight lead). v3's biggest win is
-Q6 (2.35× P50, +0.034 NDCG, particularly Q6-3 +0.335). v3's only real
-NDCG limitation is when BM25 top-50 misses true relevant papers
-(Q7-1 −0.236) — that's a recall ceiling, not a design fault.
+mean P50 18.85 ms vs 26.69 ms (**1.42× faster**) AND mean NDCG@10
+0.981 vs 0.922 (**+0.059**). v3's biggest win is Q6 (2.42× P50, +0.134
+NDCG, particularly Q6-3 +0.332); Q7 also wins (+0.100, led by Q7-3
++0.497). The only residual is a handful of very broad BM25 queries
+where v3 dips slightly below naive's post-filter (Q6-1 / Q7-1 / Q7-5,
+−0.03~−0.07) — a top-N recall ceiling, not a design fault, fully
+covered by v3's overall lead.
 
 The BFS cost formula `branching^depth` is used by v1 only for
 annotation — it's the empirical fit from `bench micro-bench-age` (see
@@ -260,7 +262,7 @@ artifacts committed under `reports/`:
 
 | file                              | purpose                                        |
 | --------------------------------- | ---------------------------------------------- |
-| `eval_v3.json`                    | **20 queries × 4 plans (naive/v1/v2/v3)** · P50 + NDCG + Jaccard + RBO + v3-vs-v2 pairwise · per-aspect AND GT (1 451 labels × 3 aspects), samples=10 |
+| `eval_v3.json`                    | **20 queries × 4 plans (naive/v1/v2/v3)** · P50 + NDCG + Jaccard + RBO + v3-vs-v2 pairwise · per-aspect AND GT (1 472 labels × 3 aspects), samples=10 |
 | `v3_summary.md`                   | v3 markdown summary — mean P50 / NDCG / per-query diff vs v2 / honest disclaim |
 | `coldwarm_v3.json`                | 7 queries × 4 plans · cold-vs-warm P50 matrix (28 cells) |
 | `coldwarm_q{1..7}_{naive,v1,v2,v3}.json` | individual cells of the cold/warm matrix (regenerated by `scripts/coldwarm_all_28.py`) |
